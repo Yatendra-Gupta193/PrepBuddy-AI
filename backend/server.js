@@ -6,7 +6,7 @@ const connectDB = require("./config/db");
 const authRoutes = require("./routes/authRoutes");
 const patientRoutes = require("./routes/patientRoutes");
 const appointmentRoutes = require("./routes/appointmentRoutes");
-
+const preparationRoutes = require("./routes/preparationRoutes");
 const app = express();
 
 app.use(cors());
@@ -17,6 +17,7 @@ connectDB();
 app.use("/api/auth", authRoutes);
 app.use("/api/patients", patientRoutes);
 app.use("/api/appointments", appointmentRoutes);
+app.use("/api/preparations", preparationRoutes);
 
 app.get("/", (req, res) => {
   res.json({
