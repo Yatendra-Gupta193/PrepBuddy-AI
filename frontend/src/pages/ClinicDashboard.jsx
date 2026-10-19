@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
+import { LogOut } from "lucide-react";
 
 import {
   ShieldCheck,
@@ -11,62 +12,15 @@ import {
   Search,
   CheckCircle2,
   Clock3,
-  LogOut,
   ChevronRight,
   Bot,
   Settings,
 } from "lucide-react";
-
-const STORAGE_KEY = "prepbuddy_patients";
-
-/* =========================================================
-   PATIENT DATA
-========================================================= */
-
-function getPatients() {
-  try {
-    const saved = localStorage.getItem(STORAGE_KEY);
-
-    if (!saved) {
-      return [];
-    }
-
-    const parsed = JSON.parse(saved);
-
-    return Array.isArray(parsed) ? parsed : [];
-  } catch (error) {
-    console.error("Unable to load patients:", error);
-    return [];
-  }
-}
-
-/* =========================================================
-   PROGRESS
-========================================================= */
-
-function getProgress(patient) {
-  const progress = Number(patient?.progress);
-
-  if (Number.isFinite(progress)) {
-    return Math.max(0, Math.min(100, progress));
-  }
-
-  return 0;
-}
-
-/* =========================================================
-   STATUS
-========================================================= */
-
-function getStatus(patient) {
-  const progress = getProgress(patient);
-
-  if (progress >= 100) {
-    return "Ready";
-  }
-
-  return "In Progress";
-}
+import useAuth from "../hooks/useAuth";
+import usePatients from "../hooks/usePatients";
+import useAppointments from "../hooks/useAppointments";
+import usePreparations from "../hooks/usePreparations";
+import { getPatientProgress, getPatientStatus } from "../services/api";
 
 /* =========================================================
    INITIALS
@@ -92,7 +46,9 @@ function formatDate(date) {
     return "Not scheduled";
   }
 
-  const parsed = new Date(`${date}T00:00:00`);
+  const parsed = /^\d{4}-\d{2}-\d{2}$/.test(date)
+    ? new Date(`${date}T00:00:00`)
+    : new Date(date);
 
   if (Number.isNaN(parsed.getTime())) {
     return date;
@@ -105,61 +61,138 @@ function formatDate(date) {
   });
 }
 
+function toValidDate(date) {
+  if (!date) return null;
+  const parsed = new Date(
+    /^\d{4}-\d{2}-\d{2}$/.test(date) ? `${date}T00:00:00` : date
+  );
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function appointmentDateLabel(date, now) {
+  const parsed = toValidDate(date);
+  if (!parsed) return "";
+  if (parsed.toDateString() === now.toDateString()) return "Today";
+  return parsed.getTime() < now.getTime() ? "Past" : "Upcoming";
+}
+
 /* =========================================================
    MAIN COMPONENT
 ========================================================= */
 
 function ClinicDashboard() {
   const navigate = useNavigate();
-
-  const [patients, setPatients] = useState([]);
+  const { user, logout } = useAuth();
+  const accountId = user?.id || user?._id;
+  const {
+    patients,
+    loading: patientsLoading,
+    error: patientsError,
+    refresh: refreshPatients,
+  } = usePatients(accountId);
+  const {
+    appointments,
+    loading: appointmentsLoading,
+    error: appointmentsError,
+    refresh: refreshAppointments,
+  } = useAppointments(accountId);
+  const {
+    preparations,
+    loading: preparationsLoading,
+    error: preparationsError,
+    refresh: refreshPreparations,
+  } = usePreparations(accountId);
   const [searchTerm, setSearchTerm] = useState("");
-
-  /* =======================================================
-     LOAD PATIENTS
-  ======================================================= */
+  const [nowTime, setNowTime] = useState(() => Date.now());
+  const loading =
+    patientsLoading || appointmentsLoading || preparationsLoading;
+  const error = patientsError || appointmentsError || preparationsError;
+  const dataUnavailable = loading || Boolean(error);
+  const now = new Date(nowTime);
 
   useEffect(() => {
-    setPatients(getPatients());
+    const interval = window.setInterval(() => setNowTime(Date.now()), 60_000);
+    return () => window.clearInterval(interval);
   }, []);
+  const refresh = () => {
+    refreshPatients();
+    refreshAppointments();
+    refreshPreparations();
+  };
 
-  /* =======================================================
-     LISTEN FOR PATIENT UPDATES
-  ======================================================= */
+  const preparationByPatient = useMemo(
+    () =>
+      new Map(
+        preparations.map((preparation) => [
+          String(preparation.patientId),
+          preparation,
+        ])
+      ),
+    [preparations]
+  );
 
-  useEffect(() => {
-    const refreshPatients = () => {
-      setPatients(getPatients());
-    };
+  const appointmentByPatient = useMemo(
+    () => {
+      const grouped = new Map();
+      for (const appointment of appointments) {
+        if (appointment.status === "cancelled") continue;
+        const patientId = appointment.patient?._id || appointment.patient;
+        if (!patientId) continue;
+        const key = String(patientId);
+        const entries = grouped.get(key) || [];
+        entries.push(appointment);
+        grouped.set(key, entries);
+      }
 
-    window.addEventListener(
-      "prepbuddy-patients-updated",
-      refreshPatients
-    );
-
-    window.addEventListener("storage", refreshPatients);
-
-    return () => {
-      window.removeEventListener(
-        "prepbuddy-patients-updated",
-        refreshPatients
+      return new Map(
+        [...grouped].map(([patientId, entries]) => {
+          const dated = entries
+            .map((appointment) => ({
+              appointment,
+              date: toValidDate(appointment.appointmentDate),
+            }))
+            .filter((entry) => entry.date);
+          const upcoming = dated
+            .filter(
+              (entry) =>
+                entry.date.getTime() >= nowTime &&
+                ["scheduled", "confirmed"].includes(entry.appointment.status)
+            )
+            .sort((left, right) => left.date - right.date);
+          const selected = upcoming[0] || dated.sort(
+            (left, right) => right.date - left.date
+          )[0];
+          return [patientId, selected?.appointment || entries[0]];
+        })
       );
-
-      window.removeEventListener("storage", refreshPatients);
-    };
-  }, []);
+    },
+    [appointments, nowTime]
+  );
 
   /* =======================================================
      NORMALIZE PATIENT DATA
   ======================================================= */
 
   const normalizedPatients = useMemo(() => {
-    return patients.map((patient) => ({
-      ...patient,
-      progress: getProgress(patient),
-      status: getStatus(patient),
-    }));
-  }, [patients]);
+    return patients.map((patient) => {
+      const preparation = preparationByPatient.get(String(patient._id));
+      const checklist = preparation
+        ? { preparationSteps: preparation.steps }
+        : patient;
+      return {
+        ...patient,
+        id: patient._id,
+        preparationStatus:
+          preparation?.preparationStatus ||
+          preparation?.status ||
+          patient.preparationStatus,
+        preparationSteps: preparation?.steps || patient.preparationSteps,
+        appointment: appointmentByPatient.get(String(patient._id)),
+        progress: preparation?.progress ?? getPatientProgress(checklist),
+        status: getPatientStatus(checklist),
+      };
+    });
+  }, [patients, preparationByPatient, appointmentByPatient]);
 
   /* =======================================================
      DASHBOARD STATISTICS
@@ -175,7 +208,6 @@ function ClinicDashboard() {
     const inProgress = normalizedPatients.filter(
       (patient) => patient.status === "In Progress"
     ).length;
-
     const averageProgress =
       total === 0
         ? 0
@@ -186,19 +218,14 @@ function ClinicDashboard() {
             ) / total
           );
 
-    const atRisk = normalizedPatients.filter(
-      (patient) =>
-        patient.progress > 0 && patient.progress < 50
-    ).length;
-
     return {
       total,
       ready,
       inProgress,
       averageProgress,
-      atRisk,
+      appointments: appointments.length,
     };
-  }, [normalizedPatients]);
+  }, [normalizedPatients, appointments.length]);
 
   /* =======================================================
      SEARCH PATIENTS
@@ -293,16 +320,16 @@ function ClinicDashboard() {
             <div className="flex items-center gap-3">
 
               <div className="flex h-9 w-9 items-center justify-center rounded-full bg-blue-600/20 text-sm font-semibold text-blue-400">
-                CS
+                {getInitials(user?.name || "Clinic Staff")}
               </div>
 
               <div className="hidden sm:block">
                 <p className="text-sm font-medium">
-                  Clinic Staff
+                  {user?.name || "Clinic Staff"}
                 </p>
 
                 <p className="text-xs text-slate-500">
-                  City Care Clinic
+                  {user?.email || user?.role || "Clinic account"}
                 </p>
               </div>
 
@@ -413,13 +440,17 @@ function ClinicDashboard() {
         {/* Logout */}
 
         <div className="border-t border-slate-800 p-4">
-          <Link
-            to="/login"
-            className="flex items-center gap-3 rounded-xl px-3 py-3 text-sm text-slate-400 transition hover:bg-slate-900 hover:text-white"
+          <button
+            type="button"
+            onClick={() => {
+              logout();
+              navigate("/login", { replace: true });
+            }}
+            className="flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left text-sm text-slate-400 transition hover:bg-slate-900 hover:text-white"
           >
             <LogOut size={19} />
             Logout
-          </Link>
+          </button>
         </div>
       </aside>
 
@@ -441,11 +472,16 @@ function ClinicDashboard() {
           <div className="mb-8">
 
             <p className="mb-1 text-sm text-blue-400">
-              Monday, August 24, 2026
+              {new Date().toLocaleDateString(undefined, {
+                weekday: "long",
+                month: "long",
+                day: "numeric",
+                year: "numeric",
+              })}
             </p>
 
             <h2 className="text-3xl font-bold tracking-tight">
-              Good morning, Clinic Staff
+              Good morning, {user?.name || "Clinic Staff"}
             </h2>
 
             <p className="mt-2 text-sm text-slate-500">
@@ -457,7 +493,54 @@ function ClinicDashboard() {
               STATS
           ================================================= */}
 
-          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+          {error && (
+            <div role="alert" className="mb-5 rounded-xl border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-300">
+              {error}
+              <button type="button" onClick={refresh} className="ml-3 underline">
+                Retry
+              </button>
+            </div>
+          )}
+          {loading && (
+            <p role="status" className="mb-5 text-sm text-slate-400">
+              Loading clinic data...
+            </p>
+          )}
+
+          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4 2xl:grid-cols-5">
+
+            <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-5">
+              <div className="flex items-start justify-between">
+                <div>
+                  <p className="text-sm text-slate-500">Appointments</p>
+                  <p className="mt-2 text-3xl font-bold">
+                    {dataUnavailable ? "—" : stats.appointments}
+                  </p>
+                </div>
+                <div className="rounded-xl bg-cyan-500/10 p-3 text-cyan-400">
+                  <CalendarDays size={21} />
+                </div>
+              </div>
+              <p className="mt-4 text-xs text-slate-500">
+                {dataUnavailable
+                  ? "Loading appointments..."
+                  : `${                  appointments.filter((item) => {
+                    const date = toValidDate(item.appointmentDate);
+                    return (
+                      date &&
+                      date.getTime() >= now.getTime() &&
+                      ["scheduled", "confirmed"].includes(item.status)
+                    );
+                  }).length} upcoming · ${appointments.filter((item) => {
+                      const date = toValidDate(item.appointmentDate);
+                        return (
+                          date &&
+                          date.getTime() < now.getTime() &&
+                          item.status !== "cancelled"
+                        );
+                    }).length} past`}
+              </p>
+            </div>
 
             {/* Total Patients */}
 
@@ -471,7 +554,7 @@ function ClinicDashboard() {
                   </p>
 
                   <p className="mt-2 text-3xl font-bold">
-                    {stats.total}
+                    {dataUnavailable ? "—" : stats.total}
                   </p>
                 </div>
 
@@ -498,7 +581,7 @@ function ClinicDashboard() {
                   </p>
 
                   <p className="mt-2 text-3xl font-bold">
-                    {stats.ready}
+                    {dataUnavailable ? "—" : stats.ready}
                   </p>
                 </div>
 
@@ -525,7 +608,7 @@ function ClinicDashboard() {
                   </p>
 
                   <p className="mt-2 text-3xl font-bold">
-                    {stats.inProgress}
+                    {dataUnavailable ? "—" : stats.inProgress}
                   </p>
                 </div>
 
@@ -552,7 +635,7 @@ function ClinicDashboard() {
                   </p>
 
                   <p className="mt-2 text-3xl font-bold">
-                    {stats.averageProgress}%
+                    {dataUnavailable ? "—" : `${stats.averageProgress}%`}
                   </p>
                 </div>
 
@@ -563,7 +646,7 @@ function ClinicDashboard() {
               </div>
 
               <p className="mt-4 text-xs text-slate-500">
-                Across all patients
+                Calculated from completed checklist steps
               </p>
             </div>
 
@@ -626,17 +709,35 @@ function ClinicDashboard() {
 
             <div className="overflow-x-auto">
 
-              {dashboardPatients.length === 0 ? (
+              {loading ? (
+                <div role="status" className="p-10 text-center text-sm text-slate-400">
+                  Loading patient records...
+                </div>
+              ) : error ? (
+                <div role="alert" className="p-10 text-center text-sm text-red-300">
+                  Patient data could not be loaded. Use Retry above to try again.
+                </div>
+              ) : dashboardPatients.length === 0 ? (
 
                 <div className="p-10 text-center">
 
                   <p className="font-semibold">
-                    No patients found
+                    {normalizedPatients.length ? "No patients found" : "No patients yet"}
                   </p>
 
                   <p className="mt-2 text-sm text-slate-500">
-                    Try another patient name or ID.
+                    {normalizedPatients.length
+                      ? "Try another patient name or ID."
+                      : "Add a patient to begin tracking procedure preparation."}
                   </p>
+                  {!normalizedPatients.length && (
+                    <Link
+                      to="/add-patient"
+                      className="mt-4 inline-flex rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-500"
+                    >
+                      Add Patient
+                    </Link>
+                  )}
 
                 </div>
 
@@ -719,13 +820,32 @@ function ClinicDashboard() {
 
                         <td className="px-5 py-4">
 
-                          <p className="text-sm text-slate-300">
-                            {formatDate(patient.procedureDate)}
-                          </p>
-
-                          <p className="text-xs text-slate-600">
-                            {patient.procedureTime || ""}
-                          </p>
+                          {(() => {
+                            const appointmentDate =
+                              patient.appointment?.appointmentDate;
+                            const label = appointmentDateLabel(
+                              appointmentDate,
+                              now
+                            );
+                            const date = toValidDate(appointmentDate);
+                            return (
+                              <>
+                                <p className="text-sm text-slate-300">
+                                  {formatDate(appointmentDate)}
+                                </p>
+                                <p className="text-xs text-slate-600">
+                                  {patient.appointment?.appointmentDate &&
+                                  date
+                                    ? date.toLocaleTimeString(undefined, {
+                                        hour: "numeric",
+                                        minute: "2-digit",
+                                      })
+                                    : ""}
+                                  {label && ` · ${label}`}
+                                </p>
+                              </>
+                            );
+                          })()}
 
                         </td>
 
@@ -768,8 +888,7 @@ function ClinicDashboard() {
 
                             </span>
 
-                          ) : (
-
+                          ) : patient.status === "In Progress" ? (
                             <span className="inline-flex items-center gap-1.5 rounded-full bg-blue-500/10 px-2.5 py-1 text-xs font-medium text-blue-400">
 
                               <Clock3 size={13} />
@@ -777,7 +896,11 @@ function ClinicDashboard() {
                               In Progress
 
                             </span>
-
+                          ) : (
+                            <span className="inline-flex items-center gap-1.5 rounded-full bg-amber-500/10 px-2.5 py-1 text-xs font-medium text-amber-400">
+                              <Clock3 size={13} />
+                              Pending
+                            </span>
                           )}
 
                         </td>
@@ -979,14 +1102,9 @@ function ClinicDashboard() {
 
                   <div className="flex items-center gap-3">
 
-                    <Users
-                      size={19}
-                      className="text-emerald-400"
-                    />
+                    <Users size={19}className="text-emerald-400"/>
 
-                    <span className="text-sm">
-                      Add New Patient
-                    </span>
+                    <span className="text-sm">Add New Patient</span>
 
                   </div>
 
@@ -1013,14 +1131,8 @@ function ClinicDashboard() {
 
                   <div className="flex items-center gap-3">
 
-                    <CheckCircle2
-                      size={19}
-                      className="text-emerald-400"
-                    />
-
-                    <span className="text-sm">
-                      Check Ready Patients
-                    </span>
+                    <CheckCircle2 size={19}className="text-emerald-400"/>
+                    <span className="text-sm">Check Ready Patients</span>
 
                   </div>
 

@@ -1,4 +1,5 @@
 const express = require("express");
+<<<<<<< HEAD
 const router = express.Router();
 
 const authMiddleware = require("../middleware/authMiddleware");
@@ -34,3 +35,27 @@ router.patch("/:id/step", updatePreparationStep);
 router.delete("/:id", deletePreparation);
 
 module.exports = router;
+=======
+const authMiddleware = require("../middleware/authMiddleware");
+const {
+  getPreparations,
+  getPreparation,
+  createChecklist,
+  updatePreparationStep,
+  updatePreparation,
+} = require("../controllers/preparationController");
+
+const router = express.Router();
+
+router.get("/", authMiddleware, getPreparations);
+router.get("/:patientId", authMiddleware, getPreparation);
+router.post("/:patientId/checklist", authMiddleware, createChecklist);
+router.patch(
+  "/:patientId/steps/:stepId",
+  authMiddleware,
+  updatePreparationStep
+);
+router.patch("/:patientId", authMiddleware, updatePreparation);
+
+module.exports = router;
+>>>>>>> 90c58b3 (Save PrepBuddy AI progress)

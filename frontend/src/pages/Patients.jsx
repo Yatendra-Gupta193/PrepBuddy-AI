@@ -1,62 +1,13 @@
-import { useEffect, useMemo, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
-
-const STORAGE_KEY = "prepbuddy_patients";
-
-const DEFAULT_PATIENTS = [
-  {
-    id: "PB-1032",
-    name: "Satyam",
-    age: 45,
-    phone: "+91 73028-68848",
-    email: "satyam@gmail.com",
-    procedure: "Colonoscopy",
-    procedureDate: "2026-02-05",
-    procedureTime: "21:00",
-    progress: 100,
-    status: "Ready",
-  },
-];
-
-function getPatients() {
-  try {
-    const saved = localStorage.getItem(STORAGE_KEY);
-
-    if (!saved) {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(DEFAULT_PATIENTS));
-      return DEFAULT_PATIENTS;
-    }
-
-    const parsed = JSON.parse(saved);
-
-    return Array.isArray(parsed) ? parsed : DEFAULT_PATIENTS;
-  } catch (error) {
-    console.error("Unable to load patients:", error);
-    return DEFAULT_PATIENTS;
-  }
-}
-
-function getProgress(patient) {
-  const progress = Number(patient?.progress);
-
-  if (Number.isFinite(progress)) {
-    return Math.max(0, Math.min(100, progress));
-  }
-
-  return 0;
-}
-
-function getStatus(patient) {
-  const progress = getProgress(patient);
-
-  if (progress >= 100) return "Ready";
-
-  if (patient?.status === "Completed") {
-    return "Ready";
-  }
-
-  return "In Progress";
-}
+import { useMemo, useState } from "react";
+import { Link, useLocation, useNavigate } from "react-router-dom";
+import {
+  api,
+  getPatientProgress,
+  getPatientStatus,
+  notifyPatientsChanged,
+} from "../services/api";
+import usePatients from "../hooks/usePatients";
+import useAuth from "../hooks/useAuth";
 
 function getInitials(name = "") {
   return name
@@ -70,7 +21,9 @@ function getInitials(name = "") {
 function formatDate(date) {
   if (!date) return "Not scheduled";
 
-  const parsed = new Date(`${date}T00:00:00`);
+  const parsed = /^\d{4}-\d{2}-\d{2}$/.test(date)
+    ? new Date(`${date}T00:00:00`)
+    : new Date(date);
 
   if (Number.isNaN(parsed.getTime())) {
     return date;
@@ -85,35 +38,24 @@ function formatDate(date) {
 
 export default function Patients() {
   const navigate = useNavigate();
-
-  const [patients, setPatients] = useState([]);
+  const location = useLocation();
+  const { user } = useAuth();
+  const { patients, loading, error, refresh } = usePatients(user?.id || user?._id);
   const [searchTerm, setSearchTerm] = useState("");
   const [statusFilter, setStatusFilter] = useState("All");
   const [deletePatient, setDeletePatient] = useState(null);
-
-  // Load patients when page opens
-  useEffect(() => {
-    setPatients(getPatients());
-  }, []);
-
-  // Keep Patients page synchronized when localStorage changes
-  useEffect(() => {
-    const handleStorageChange = () => {
-      setPatients(getPatients());
-    };
-
-    window.addEventListener("storage", handleStorageChange);
-
-    return () => {
-      window.removeEventListener("storage", handleStorageChange);
-    };
-  }, []);
+  const [deleteLoading, setDeleteLoading] = useState(false);
+  const [actionError, setActionError] = useState("");
+  const [successMessage, setSuccessMessage] = useState(
+    location.state?.success || ""
+  );
 
   const normalizedPatients = useMemo(() => {
     return patients.map((patient) => ({
       ...patient,
-      progress: getProgress(patient),
-      status: getStatus(patient),
+      id: patient._id,
+      progress: getPatientProgress(patient),
+      status: getPatientStatus(patient),
     }));
   }, [patients]);
 
@@ -165,46 +107,23 @@ export default function Patients() {
     };
   }, [normalizedPatients]);
 
-  const savePatients = (updatedPatients) => {
-    setPatients(updatedPatients);
-    localStorage.setItem(
-      STORAGE_KEY,
-      JSON.stringify(updatedPatients)
-    );
+  const handleDelete = async () => {
+    if (!deletePatient || deleteLoading) return;
+    setDeleteLoading(true);
+    setActionError("");
 
-    // Notify other components in the same tab
-    window.dispatchEvent(new Event("prepbuddy-patients-updated"));
+    try {
+      await api.patients.delete(deletePatient.id);
+      setDeletePatient(null);
+      setSuccessMessage("Patient deleted successfully.");
+      notifyPatientsChanged();
+      await refresh();
+    } catch (requestError) {
+      setActionError(requestError.message || "Unable to delete this patient.");
+    } finally {
+      setDeleteLoading(false);
+    }
   };
-
-  const handleDelete = () => {
-    if (!deletePatient) return;
-
-    const updatedPatients = patients.filter(
-      (patient) => patient.id !== deletePatient.id
-    );
-
-    savePatients(updatedPatients);
-    setDeletePatient(null);
-  };
-
-  // Refresh when another PrepBuddy component updates patient data
-  useEffect(() => {
-    const handlePatientUpdate = () => {
-      setPatients(getPatients());
-    };
-
-    window.addEventListener(
-      "prepbuddy-patients-updated",
-      handlePatientUpdate
-    );
-
-    return () => {
-      window.removeEventListener(
-        "prepbuddy-patients-updated",
-        handlePatientUpdate
-      );
-    };
-  }, []);
 
   return (
     <div className="min-h-screen bg-[#020617] text-white">
@@ -226,13 +145,18 @@ export default function Patients() {
 
           <div className="flex items-center gap-3">
             <div className="flex h-10 w-10 items-center justify-center rounded-full bg-blue-950 text-sm font-semibold text-blue-400">
-              CS
+            {(user?.name || "Clinic Staff")
+              .trim()
+              .split(/\s+/)
+              .slice(0, 2)
+              .map((part) => part[0]?.toUpperCase())
+              .join("")}
             </div>
 
             <div className="hidden sm:block">
-              <p className="text-sm font-semibold">Clinic Staff</p>
+              <p className="text-sm font-semibold">{user?.name || "Clinic Staff"}</p>
               <p className="text-xs text-slate-500">
-                City Care Clinic
+                {user?.email || user?.role || "Clinic account"}
               </p>
             </div>
           </div>
@@ -251,7 +175,7 @@ export default function Patients() {
           </div>
 
           <button
-            onClick={() => navigate("/patients/add")}
+            onClick={() => navigate("/add-patient")}
             className="rounded-xl bg-blue-600 px-5 py-3 font-semibold transition hover:bg-blue-500"
           >
             + Add Patient
@@ -292,6 +216,25 @@ export default function Patients() {
         </div>
 
         {/* Search + Filter */}
+        {error && (
+          <div role="alert" className="mb-5 rounded-xl border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-300">
+            {error}
+            <button type="button" onClick={refresh} className="ml-3 underline">
+              Retry
+            </button>
+          </div>
+        )}
+        {actionError && (
+          <p role="alert" className="mb-5 rounded-xl border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-300">
+            {actionError}
+          </p>
+        )}
+        {successMessage && (
+          <p role="status" className="mb-5 rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-4 text-sm text-emerald-300">
+            {successMessage}
+          </p>
+        )}
+
         <div className="mb-6 flex flex-col gap-3 md:flex-row">
           <div className="relative flex-1">
             <input
@@ -313,6 +256,7 @@ export default function Patients() {
             className="rounded-xl border border-slate-800 bg-[#0b1225] px-4 py-3 text-white outline-none focus:border-blue-500"
           >
             <option value="All">All Status</option>
+            <option value="Pending">Pending</option>
             <option value="In Progress">In Progress</option>
             <option value="Ready">Ready</option>
           </select>
@@ -320,14 +264,20 @@ export default function Patients() {
 
         {/* Patient List */}
         <div className="space-y-4">
-          {filteredPatients.length === 0 ? (
+          {loading ? (
+            <div role="status" className="rounded-2xl border border-slate-800 bg-[#0b1225] px-6 py-14 text-center text-slate-400">
+              Loading patients...
+            </div>
+          ) : filteredPatients.length === 0 ? (
             <div className="rounded-2xl border border-slate-800 bg-[#0b1225] px-6 py-14 text-center">
               <p className="text-lg font-semibold">
-                No patients found
+                {patients.length ? "No patients found" : "No patients yet"}
               </p>
 
               <p className="mt-2 text-sm text-slate-500">
-                Try changing your search or status filter.
+                {patients.length
+                  ? "Try changing your search or status filter."
+                  : "Add a patient to start managing procedure preparation."}
               </p>
             </div>
           ) : (
@@ -448,6 +398,7 @@ export default function Patients() {
             <div className="mt-6 flex justify-end gap-3">
               <button
                 onClick={() => setDeletePatient(null)}
+                disabled={deleteLoading}
                 className="rounded-xl border border-slate-700 px-4 py-2 font-semibold text-slate-300 hover:bg-slate-800"
               >
                 Cancel
@@ -455,9 +406,10 @@ export default function Patients() {
 
               <button
                 onClick={handleDelete}
+                disabled={deleteLoading}
                 className="rounded-xl bg-red-600 px-4 py-2 font-semibold text-white hover:bg-red-500"
               >
-                Delete Patient
+                {deleteLoading ? "Deleting..." : "Delete Patient"}
               </button>
             </div>
           </div>

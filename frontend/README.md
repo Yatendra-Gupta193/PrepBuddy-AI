@@ -1,16 +1,32 @@
-# React + Vite
+# PrepBuddy AI frontend
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+## Local development
 
-Currently, two official plugins are available:
+1. Install dependencies with `npm install`.
+2. Copy `.env.example` to `.env` and set `VITE_API_URL` to the backend origin
+   (the default local backend is `http://localhost:5000`).
+3. Start the Vite development server with `npm run dev`.
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+The frontend uses the backend's authenticated authentication, patient,
+appointment, preparation, and reminder APIs. Preparation checklists are stored
+on their patient record as `preparationSteps` entries with `title` and
+`completed` fields. Progress is the completed-step percentage; an empty
+checklist has 0% progress and `not_started` status. Do not put backend secrets
+or database credentials in Vite environment variables; Vite variables are
+exposed to the browser.
 
-## React Compiler
+The preparation API supports listing account-owned checklists, retrieving or
+creating a patient's checklist, toggling a step, and updating preparation
+status through the compatibility endpoint. See
+`backend/routes/preparationRoutes.js` for the authenticated routes.
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+Legacy patient records without a checklist are safely initialized on their
+first patient/preparation read. Existing `pending` records migrate to unchecked
+default steps, `in_progress` records to half-complete defaults, and `completed`
+records to fully complete defaults. The migration preserves the existing
+status meaning while ensuring future progress is derived from stored steps.
 
-## Expanding the Oxlint configuration
+## Checks
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and Oxlint's TypeScript related rules in your project.
+- `npm run build` creates the production bundle.
+- `npm run lint` runs Oxlint.

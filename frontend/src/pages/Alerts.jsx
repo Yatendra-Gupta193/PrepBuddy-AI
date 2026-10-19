@@ -1,75 +1,66 @@
 import { useMemo, useState } from "react"
 import {
-  AlertTriangle,
-  CheckCircle2,
-  Clock3,
-  Search,
-  Filter,
-  Bell,
-  UserRound,
-  CalendarDays,
-  XCircle,
+  AlertTriangle, CheckCircle2,
+  Clock3, Search,
+  Filter, Bell,
+  UserRound, CalendarDays, XCircle,
 } from "lucide-react"
 import { useNavigate } from "react-router-dom"
+import useAuth from "../hooks/useAuth"
+import usePatients from "../hooks/usePatients"
+import { api, notifyPatientsChanged } from "../services/api"
 
-const initialAlerts = [
-  {
-    id: 1,
-    patientId: "PB-1031",
-    patient: "Rohan Verma",
-    procedure: "Endoscopy",
-    title: "Preparation Progress Low",
-    message: "Patient preparation is currently at 20%. Follow-up may be required.",
-    date: "Today",
-    time: "10:30 AM",
-    severity: "High",
-    status: "Active",
-  },
-  {
-    id: 2,
-    patientId: "PB-1032",
-    patient: "Satyam",
-    procedure: "Colonoscopy",
-    title: "Preparation In Progress",
-    message: "Patient preparation is at 80%. Final readiness check is pending.",
-    date: "Today",
-    time: "11:00 AM",
-    severity: "Medium",
-    status: "Active",
-  },
-  {
-    id: 3,
-    patientId: "PB-1033",
-    patient: "Ronak Gupta",
-    procedure: "MRI",
-    title: "Patient Ready",
-    message: "All preparation checkpoints have been completed.",
-    date: "Today",
-    time: "09:30 AM",
-    severity: "Low",
-    status: "Resolved",
-  },
-  {
-    id: 4,
-    patientId: "PB-1030",
-    patient: "Rohan Verma",
-    procedure: "Endoscopy",
-    title: "Procedure Reminder Pending",
-    message: "A scheduled reminder has not yet been completed.",
-    date: "Today",
-    time: "02:00 PM",
-    severity: "High",
-    status: "Active",
-  },
-]
+const EMPTY_DISMISSED = []
 
 function Alerts() {
   const navigate = useNavigate()
-
-  const [alerts, setAlerts] = useState(initialAlerts)
+  const { user } = useAuth()
+  const accountId = user?.id || user?._id
+  const { patients, loading, error, refresh } = usePatients(accountId)
+  const [dismissedByAccount, setDismissedByAccount] = useState({})
+  const [actionError, setActionError] = useState("")
   const [search, setSearch] = useState("")
   const [severityFilter, setSeverityFilter] = useState("All Severity")
   const [statusFilter, setStatusFilter] = useState("All Status")
+
+  const dismissed = dismissedByAccount[accountId] || EMPTY_DISMISSED
+
+  const alerts = useMemo(
+    () =>
+      patients.map((patient) => {
+        const ready = patient.preparationStatus === "completed"
+        const inProgress = patient.preparationStatus === "in_progress"
+        const updatedAt = new Date(patient.updatedAt)
+        return {
+          id: patient._id,
+          patientId: patient._id,
+          patient: patient.name,
+          procedure: patient.procedure || "Procedure not specified",
+          title: ready
+            ? "Patient Ready"
+            : inProgress
+              ? "Preparation In Progress"
+              : "Preparation Progress Low",
+          message: ready
+            ? "Patient preparation is complete."
+            : inProgress
+              ? "Preparation is in progress; review remaining instructions."
+              : "Preparation has not started. Follow-up may be required.",
+          date: Number.isNaN(updatedAt.getTime())
+            ? "Date unavailable"
+            : updatedAt.toLocaleDateString(),
+          time: Number.isNaN(updatedAt.getTime())
+            ? ""
+            : updatedAt.toLocaleTimeString([], {
+                hour: "numeric",
+                minute: "2-digit",
+              }),
+          severity: ready ? "Low" : inProgress ? "Medium" : "High",
+          status: ready || dismissed.includes(patient._id) ? "Resolved" : "Active",
+        }
+      }),
+    [patients, dismissed]
+  )
 
   const filteredAlerts = useMemo(() => {
     return alerts.filter((alert) => {
@@ -105,20 +96,21 @@ function Alerts() {
     ).length,
   }
 
-  const resolveAlert = (id) => {
-    setAlerts((current) =>
-      current.map((alert) =>
-        alert.id === id
-          ? { ...alert, status: "Resolved" }
-          : alert
-      )
-    )
+  const resolveAlert = async (patientId) => {
+    setActionError("")
+    try {
+      await api.preparations.updateStatus(patientId, "completed")
+      notifyPatientsChanged()
+    } catch (requestError) {
+      setActionError(requestError.message || "Unable to resolve preparation alert.")
+    }
   }
 
   const removeAlert = (id) => {
-    setAlerts((current) =>
-      current.filter((alert) => alert.id !== id)
-    )
+    setDismissedByAccount((current) => ({
+      ...current,
+      [accountId]: [...new Set([...(current[accountId] || []), id])],
+    }))
   }
 
   const getSeverityClass = (severity) => {
@@ -176,6 +168,17 @@ function Alerts() {
       </header>
 
       <main className="mx-auto max-w-7xl px-6 py-8">
+
+        {(error || actionError) && (
+          <div role="alert" className="mb-6 rounded-xl border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-300">
+            {actionError || error}
+            {error && (
+              <button type="button" onClick={refresh} className="ml-3 underline">
+                Retry
+              </button>
+            )}
+          </div>
+        )}
 
         {/* Stats */}
         <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-4">
@@ -314,7 +317,11 @@ function Alerts() {
 
           <div className="divide-y divide-slate-800">
 
-            {filteredAlerts.length === 0 ? (
+            {loading ? (
+              <div role="status" className="px-6 py-16 text-center text-slate-400">
+                Loading patient alerts...
+              </div>
+            ) : filteredAlerts.length === 0 ? (
               <div className="px-6 py-16 text-center">
 
                 <CheckCircle2
@@ -476,10 +483,8 @@ function Alerts() {
               </h3>
 
               <p className="mt-1 text-sm leading-6 text-slate-400">
-                Alerts are currently managed in the frontend.
-                Automatic alerts based on patient preparation,
-                procedure schedules and backend events will be
-                connected in the next integration phase.
+                Alerts are generated from each account's patient preparation status.
+                Resolving an active alert marks that patient's preparation complete.
               </p>
             </div>
 

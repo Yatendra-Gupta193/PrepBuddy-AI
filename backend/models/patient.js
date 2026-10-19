@@ -1,5 +1,20 @@
 const mongoose = require("mongoose");
 
+const preparationStepSchema = new mongoose.Schema(
+  {
+    title: {
+      type: String,
+      required: true,
+      trim: true,
+    },
+    completed: {
+      type: Boolean,
+      default: false,
+    },
+  },
+  { timestamps: true }
+);
+
 const patientSchema = new mongoose.Schema(
   {
     // Basic Information
@@ -67,8 +82,18 @@ const patientSchema = new mongoose.Schema(
     // Preparation status
     preparationStatus: {
       type: String,
-      enum: ["pending", "in_progress", "completed"],
-      default: "pending",
+      enum: ["not_started", "pending", "in_progress", "completed"],
+      default: "not_started",
+    },
+
+    preparationSteps: {
+      type: [preparationStepSchema],
+      default: [],
+    },
+
+    preparationChecklistInitialized: {
+      type: Boolean,
+      default: false,
     },
 
     // Patient created by logged-in staff/user

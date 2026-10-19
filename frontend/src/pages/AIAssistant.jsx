@@ -13,42 +13,10 @@ import {
   Clock3,
   MessageCircle,
 } from "lucide-react"
-
-const patients = [
-  {
-    id: "PB-1031",
-    name: "Rohan Verma",
-    age: 40,
-    procedure: "Endoscopy",
-    date: "Sep 9, 2026",
-    time: "10:00 AM",
-    progress: 20,
-    status: "In Progress",
-    pending: 3,
-  },
-  {
-    id: "PB-1032",
-    name: "Satyam",
-    age: 45,
-    procedure: "Colonoscopy",
-    date: "Sep 9, 2026",
-    time: "09:00 AM",
-    progress: 80,
-    status: "In Progress",
-    pending: 1,
-  },
-  {
-    id: "PB-1033",
-    name: "Ronak Gupta",
-    age: 32,
-    procedure: "MRI",
-    date: "Aug 25, 2026",
-    time: "06:00 PM",
-    progress: 100,
-    status: "Ready",
-    pending: 0,
-  },
-]
+import useAuth from "../hooks/useAuth"
+import usePatients from "../hooks/usePatients"
+import useAppointments from "../hooks/useAppointments"
+import { getPatientProgress, getPatientStatus } from "../services/api"
 
 const suggestedQuestions = [
   "Is this patient ready for the procedure?",
@@ -56,21 +24,71 @@ const suggestedQuestions = [
   "What reminders should be sent?",
   "Give me a preparation summary.",
 ]
+const initialMessages = [
+  {
+    role: "assistant",
+    text: "Hello! I'm PrepBuddy AI. Select a patient and ask me about their preparation, procedure, pending tasks, or reminders.",
+  },
+]
 
 function AIAssistant() {
-  const [selectedPatientId, setSelectedPatientId] = useState("PB-1031")
+  const { user } = useAuth()
+  const accountId = user?.id || user?._id
+  const {
+    patients: backendPatients,
+    loading: patientsLoading,
+    error: patientsError,
+    refresh: refreshPatients,
+  } = usePatients(accountId)
+  const { appointments } = useAppointments(accountId)
+  const patients = useMemo(
+    () =>
+      backendPatients.map((patient) => {
+        const appointment = appointments.find(
+          (item) =>
+            String(item.patient?._id || item.patient) === String(patient._id)
+        )
+        const progress = getPatientProgress(patient)
+        const scheduledAt = appointment?.appointmentDate || patient.procedureDate
+        const dateValue = scheduledAt ? new Date(scheduledAt) : null
+        return {
+          ...patient,
+          id: patient._id,
+          procedure: patient.procedure || "Procedure not specified",
+          date:
+            dateValue && !Number.isNaN(dateValue.getTime())
+              ? dateValue.toLocaleDateString()
+              : "Not scheduled",
+          time:
+            dateValue && !Number.isNaN(dateValue.getTime())
+              ? dateValue.toLocaleTimeString([], {
+                  hour: "numeric",
+                  minute: "2-digit",
+                })
+              : "Not scheduled",
+          progress,
+          status: getPatientStatus(patient),
+          pending: (patient.preparationSteps || []).filter(
+            (step) => !step.completed
+          ).length,
+        }
+      }),
+    [backendPatients, appointments]
+  )
+  const [selection, setSelection] = useState({ accountId: null, id: "" })
   const [search, setSearch] = useState("")
   const [message, setMessage] = useState("")
-  const [messages, setMessages] = useState([
-    {
-      role: "assistant",
-      text: "Hello! I'm PrepBuddy AI. Select a patient and ask me about their preparation, procedure, pending tasks, or reminders.",
-    },
-  ])
+  const [chat, setChat] = useState({ accountId: null, messages: initialMessages })
+  const selectedPatientId =
+    selection.accountId === accountId ? selection.id : ""
+  const messages =
+    chat.accountId === accountId ? chat.messages : initialMessages
 
   const selectedPatient = useMemo(
-    () => patients.find((patient) => patient.id === selectedPatientId),
-    [selectedPatientId]
+    () =>
+      patients.find((patient) => patient.id === selectedPatientId) ||
+      patients[0],
+    [patients, selectedPatientId]
   )
 
   const filteredPatients = patients.filter((patient) =>
@@ -116,28 +134,36 @@ function AIAssistant() {
 
     const response = generateResponse(trimmedMessage)
 
-    setMessages((previous) => [
-      ...previous,
-      {
-        role: "user",
-        text: trimmedMessage,
-      },
-      {
-        role: "assistant",
-        text: response,
-      },
-    ])
+    setChat((previous) => ({
+      accountId,
+      messages: [
+        ...(previous.accountId === accountId
+          ? previous.messages
+          : initialMessages),
+        {
+          role: "user",
+          text: trimmedMessage,
+        },
+        {
+          role: "assistant",
+          text: response,
+        },
+      ],
+    }))
 
     setMessage("")
   }
 
   const clearChat = () => {
-    setMessages([
-      {
-        role: "assistant",
-        text: "Chat cleared. How can I help you with patient preparation?",
-      },
-    ])
+    setChat({
+      accountId,
+      messages: [
+        {
+          role: "assistant",
+          text: "Chat cleared. How can I help you with patient preparation?",
+        },
+      ],
+    })
   }
 
   return (
@@ -208,10 +234,23 @@ function AIAssistant() {
 
             {/* Patients */}
             <div className="space-y-3">
+              {patientsError && (
+                <div role="alert" className="rounded-lg border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-300">
+                  {patientsError}
+                  <button type="button" onClick={refreshPatients} className="ml-2 underline">
+                    Retry
+                  </button>
+                </div>
+              )}
+              {patientsLoading && (
+                <p role="status" className="py-4 text-center text-sm text-slate-500">
+                  Loading patients...
+                </p>
+              )}
               {filteredPatients.map((patient) => (
                 <button
                   key={patient.id}
-                  onClick={() => setSelectedPatientId(patient.id)}
+                  onClick={() => setSelection({ accountId, id: patient.id })}
                   className={`w-full rounded-xl border p-4 text-left transition ${
                     selectedPatientId === patient.id
                       ? "border-blue-500 bg-blue-500/10"
@@ -241,9 +280,9 @@ function AIAssistant() {
                 </button>
               ))}
 
-              {filteredPatients.length === 0 && (
+              {!patientsLoading && filteredPatients.length === 0 && (
                 <p className="py-6 text-center text-sm text-slate-500">
-                  No patient found.
+                  No patients in this clinic account yet.
                 </p>
               )}
             </div>

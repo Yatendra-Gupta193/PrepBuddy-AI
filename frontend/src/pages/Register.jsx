@@ -8,9 +8,44 @@ import {
   Building2,
 } from "lucide-react"
 import { useState } from "react"
+import { useNavigate } from "react-router-dom"
+import useAuth from "../hooks/useAuth"
 
 function Register() {
-  const [role, setRole] = useState("patient")
+  const navigate = useNavigate()
+  const { register } = useAuth()
+  const [formData, setFormData] = useState({
+    name: "",
+    email: "",
+    password: "",
+  })
+  const [error, setError] = useState("")
+  const [loading, setLoading] = useState(false)
+
+  const handleChange = (event) => {
+    const { name, value } = event.target
+    setFormData((current) => ({ ...current, [name]: value }))
+  }
+
+  const handleSubmit = async (event) => {
+    event.preventDefault()
+    if (loading) return
+    setError("")
+    setLoading(true)
+
+    try {
+      await register({
+        ...formData,
+        name: formData.name.trim(),
+        email: formData.email.trim(),
+      })
+      navigate("/clinic-dashboard", { replace: true })
+    } catch (requestError) {
+      setError(requestError.message || "Unable to create your account.")
+    } finally {
+      setLoading(false)
+    }
+  }
 
   return (
     <div className="min-h-screen bg-slate-950 text-white">
@@ -78,24 +113,16 @@ function Register() {
 
               <div className="grid grid-cols-2 gap-3">
 
-                {/* Patient */}
+                {/* The backend currently only supports clinic staff accounts. */}
                 <button
                   type="button"
-                  onClick={() => setRole("patient")}
-                  className={`rounded-xl border p-4 text-left transition ${
-                    role === "patient"
-                      ? "border-blue-500 bg-blue-500/10"
-                      : "border-slate-700 bg-slate-950 hover:border-slate-600"
-                  }`}
+                  disabled
+                  className="cursor-not-allowed rounded-xl border border-slate-800 bg-slate-950 p-4 text-left opacity-50"
                 >
 
                   <User
                     size={22}
-                    className={
-                      role === "patient"
-                        ? "text-blue-400"
-                        : "text-slate-500"
-                    }
+                    className="text-slate-500"
                   />
 
                   <p className="mt-2 font-semibold">
@@ -103,7 +130,7 @@ function Register() {
                   </p>
 
                   <p className="mt-1 text-xs text-slate-500">
-                    Manage your preparation
+                    Patient accounts unavailable
                   </p>
 
                 </button>
@@ -111,20 +138,14 @@ function Register() {
                 {/* Clinic Staff */}
                 <button
                   type="button"
-                  onClick={() => setRole("clinic")}
-                  className={`rounded-xl border p-4 text-left transition ${
-                    role === "clinic"
-                      ? "border-blue-500 bg-blue-500/10"
-                      : "border-slate-700 bg-slate-950 hover:border-slate-600"
-                  }`}
+                  aria-pressed="true"
+                  className="rounded-xl border border-blue-500 bg-blue-500/10 p-4 text-left transition"
                 >
 
                   <Building2
                     size={22}
                     className={
-                      role === "clinic"
-                        ? "text-blue-400"
-                        : "text-slate-500"
+                      "text-blue-400"
                     }
                   />
 
@@ -143,7 +164,7 @@ function Register() {
             </div>
 
             {/* Form */}
-            <form className="space-y-5">
+            <form className="space-y-5" onSubmit={handleSubmit}>
 
               {/* Full Name */}
               <div>
@@ -160,8 +181,14 @@ function Register() {
                   />
 
                   <input
+                    id="register-name"
+                    name="name"
                     type="text"
                     placeholder="Enter your full name"
+                    autoComplete="name"
+                    value={formData.name}
+                    onChange={handleChange}
+                    required
                     className="w-full rounded-xl border border-slate-700 bg-slate-950 py-3 pl-10 pr-4 text-white outline-none placeholder:text-slate-600 focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
                   />
 
@@ -184,8 +211,14 @@ function Register() {
                   />
 
                   <input
+                    id="register-email"
+                    name="email"
                     type="email"
                     placeholder="you@example.com"
+                    autoComplete="email"
+                    value={formData.email}
+                    onChange={handleChange}
+                    required
                     className="w-full rounded-xl border border-slate-700 bg-slate-950 py-3 pl-10 pr-4 text-white outline-none placeholder:text-slate-600 focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
                   />
 
@@ -208,8 +241,15 @@ function Register() {
                   />
 
                   <input
+                    id="register-password"
+                    name="password"
                     type="password"
                     placeholder="Create a password"
+                    autoComplete="new-password"
+                    minLength={6}
+                    value={formData.password}
+                    onChange={handleChange}
+                    required
                     className="w-full rounded-xl border border-slate-700 bg-slate-950 py-3 pl-10 pr-4 text-white outline-none placeholder:text-slate-600 focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
                   />
 
@@ -217,12 +257,18 @@ function Register() {
 
               </div>
 
-              {/* Register Button */}
+              {error && (
+                <p role="alert" className="rounded-lg border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-300">
+                  {error}
+                </p>
+              )}
+
               <button
                 type="submit"
-                className="w-full rounded-xl bg-blue-600 py-3.5 font-semibold text-white transition hover:bg-blue-500"
+                disabled={loading}
+                className="w-full rounded-xl bg-blue-600 py-3.5 font-semibold text-white transition hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-60"
               >
-                Create Account
+                {loading ? "Creating Account..." : "Create Account"}
               </button>
 
             </form>

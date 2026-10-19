@@ -12,69 +12,44 @@ import {
   CircleAlert,
 } from "lucide-react"
 import { useNavigate } from "react-router-dom"
-
-const initialReminders = [
-  {
-    id: 1,
-    patientId: "PB-1031",
-    patient: "Rohan Verma",
-    procedure: "Endoscopy",
-    type: "Preparation Reminder",
-    message: "Please review your preparation instructions before the procedure.",
-    scheduled: "Sep 8, 2026",
-    time: "10:00 AM",
-    channel: "Email",
-    status: "Scheduled",
-    priority: "High",
-  },
-  {
-    id: 2,
-    patientId: "PB-1032",
-    patient: "Satyam",
-    procedure: "Colonoscopy",
-    type: "Confirmation Reminder",
-    message: "Please confirm your appointment and preparation status.",
-    scheduled: "Sep 9, 2026",
-    time: "09:00 AM",
-    channel: "Email",
-    status: "Scheduled",
-    priority: "Medium",
-  },
-  {
-    id: 3,
-    patientId: "PB-1033",
-    patient: "Ronak Gupta",
-    procedure: "MRI",
-    type: "Procedure Reminder",
-    message: "Your procedure is scheduled soon. Please be ready as instructed.",
-    scheduled: "Aug 25, 2026",
-    time: "06:00 PM",
-    channel: "Email",
-    status: "Sent",
-    priority: "Low",
-  },
-  {
-    id: 4,
-    patientId: "PB-1030",
-    patient: "Rohan Verma",
-    procedure: "Endoscopy",
-    type: "Preparation Follow-up",
-    message: "Patient preparation is currently at 20%. Follow-up required.",
-    scheduled: "Today",
-    time: "02:00 PM",
-    channel: "Notification",
-    status: "Pending",
-    priority: "High",
-  },
-]
+import { api, notifyRemindersChanged } from "../services/api"
+import useAuth from "../hooks/useAuth"
+import useReminders from "../hooks/useReminders"
 
 function Reminders() {
   const navigate = useNavigate()
-
-  const [reminders, setReminders] = useState(initialReminders)
+  const { user } = useAuth()
+  const { reminders: backendReminders, loading, error, refresh } =
+    useReminders(user?.id || user?._id)
+  const [actionError, setActionError] = useState("")
   const [search, setSearch] = useState("")
   const [statusFilter, setStatusFilter] = useState("All Status")
   const [typeFilter, setTypeFilter] = useState("All Types")
+
+  const reminders = useMemo(
+    () =>
+      backendReminders.map((reminder) => {
+        const patient = reminder.patient || {}
+        const scheduledAt = new Date(reminder.scheduledAt)
+        return {
+          ...reminder,
+          id: reminder._id,
+          patientId: patient._id || "",
+          patient: patient.name || "Deleted patient",
+          procedure: patient.procedure || "Procedure not specified",
+          scheduled: Number.isNaN(scheduledAt.getTime())
+            ? "Not scheduled"
+            : scheduledAt.toLocaleDateString(),
+          time: Number.isNaN(scheduledAt.getTime())
+            ? ""
+            : scheduledAt.toLocaleTimeString([], {
+                hour: "numeric",
+                minute: "2-digit",
+              }),
+        }
+      }),
+    [backendReminders]
+  )
 
   const filteredReminders = useMemo(() => {
     return reminders.filter((reminder) => {
@@ -105,20 +80,24 @@ function Reminders() {
     pending: reminders.filter((item) => item.status === "Pending").length,
   }
 
-  const markAsSent = (id) => {
-    setReminders((current) =>
-      current.map((reminder) =>
-        reminder.id === id
-          ? { ...reminder, status: "Sent" }
-          : reminder
-      )
-    )
+  const markAsSent = async (id) => {
+    setActionError("")
+    try {
+      await api.reminders.update(id, { status: "Sent" })
+      notifyRemindersChanged()
+    } catch (requestError) {
+      setActionError(requestError.message || "Unable to update reminder.")
+    }
   }
 
-  const deleteReminder = (id) => {
-    setReminders((current) =>
-      current.filter((reminder) => reminder.id !== id)
-    )
+  const deleteReminder = async (id) => {
+    setActionError("")
+    try {
+      await api.reminders.delete(id)
+      notifyRemindersChanged()
+    } catch (requestError) {
+      setActionError(requestError.message || "Unable to delete reminder.")
+    }
   }
 
   const openPatient = (patientId) => {
@@ -163,6 +142,8 @@ function Reminders() {
           </div>
 
           <button
+            type="button"
+            disabled={loading}
             onClick={() => navigate("/clinic-dashboard")}
             className="rounded-lg border border-slate-700 px-4 py-2 text-sm text-slate-300 transition hover:border-blue-500 hover:text-white"
           >
@@ -175,6 +156,19 @@ function Reminders() {
       <main className="mx-auto max-w-7xl px-6 py-8">
 
         {/* Stats */}
+        {error && (
+          <div role="alert" className="mt-6 rounded-xl border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-300">
+            {error}
+            <button type="button" onClick={refresh} className="ml-3 underline">
+              Retry
+            </button>
+          </div>
+        )}
+        {actionError && (
+          <p role="alert" className="mt-6 rounded-xl border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-300">
+            {actionError}
+          </p>
+        )}
         <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-4">
 
           <div className="rounded-2xl border border-slate-800 bg-[#0b1124] p-6">
@@ -303,7 +297,11 @@ function Reminders() {
 
           <div className="divide-y divide-slate-800">
 
-            {filteredReminders.length === 0 ? (
+            {loading ? (
+              <div role="status" className="px-6 py-16 text-center text-slate-400">
+                Loading reminders...
+              </div>
+            ) : filteredReminders.length === 0 ? (
               <div className="px-6 py-16 text-center">
                 <Bell
                   size={42}
@@ -321,7 +319,7 @@ function Reminders() {
             ) : (
               filteredReminders.map((reminder) => (
                 <div
-                  key={reminder.id}
+                  key=                  {reminder.patientId || "Patient unavailable"}
                   className="p-6 transition hover:bg-slate-900/40"
                 >
 
@@ -340,7 +338,9 @@ function Reminders() {
 
                       <div>
                         <button
+                          type="button"
                           onClick={() => openPatient(reminder.patientId)}
+                          disabled={!reminder.patientId}
                           className="font-semibold text-white transition hover:text-blue-400"
                         >
                           {reminder.patient}
@@ -418,6 +418,8 @@ function Reminders() {
 
                       {reminder.status !== "Sent" && (
                         <button
+                          type="button"
+                          disabled={loading}
                           onClick={() => markAsSent(reminder.id)}
                           className="rounded-lg border border-emerald-500/30 px-4 py-2 text-sm text-emerald-400 transition hover:bg-emerald-500/10"
                         >
@@ -466,9 +468,9 @@ function Reminders() {
               </h3>
 
               <p className="mt-1 text-sm leading-6 text-slate-400">
-                Reminders are currently managed in the frontend.
-                Backend scheduling, email delivery and automated
-                notifications will be connected in the next phase.
+                Reminder records are stored for this clinic account.
+                Delivery is not configured; marking a reminder as Sent records
+                its status but does not send an email or notification.
               </p>
             </div>
 

@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 const Preparation = require("../models/preparation");
 const Patient = require("../models/patient");
 const Appointment = require("../models/appointment");
@@ -21,12 +22,126 @@ const createPreparation = async (req, res) => {
     });
 
     if (!existingPatient) {
+=======
+const Patient = require("../models/patient");
+const {
+  buildDefaultSteps,
+  getChecklistSummary,
+  migratePatientChecklist,
+} = require("../utils/preparationChecklist");
+
+const LEGACY_STATUSES = ["pending", "in_progress", "completed"];
+const PREPARATION_STATUSES = ["not_started", ...LEGACY_STATUSES];
+
+function serializePreparation(patient) {
+  const summary = getChecklistSummary(patient.preparationSteps);
+  return {
+    patientId: patient._id,
+    patientName: patient.name,
+    procedure: patient.procedure || "",
+    steps: patient.preparationSteps.map((step) => ({
+      id: step._id,
+      title: step.title,
+      completed: step.completed,
+    })),
+    ...summary,
+    preparationStatus: summary.status,
+    updatedAt: patient.updatedAt,
+  };
+}
+
+async function findOwnedPatient(patientId, userId) {
+  const patient = await Patient.findOne({
+    _id: patientId,
+    createdBy: userId,
+  });
+  return patient ? migratePatientChecklist(patient) : null;
+}
+
+function validateSteps(steps) {
+  return (
+    Array.isArray(steps) &&
+    steps.every(
+      (step) =>
+        step &&
+        typeof step.title === "string" &&
+        step.title.trim().length > 0 &&
+        (step.completed === undefined || typeof step.completed === "boolean")
+    )
+  );
+}
+
+async function getPreparations(req, res) {
+  try {
+    const patients = await Patient.find({ createdBy: req.user.userId }).sort({
+      updatedAt: -1,
+    });
+    const preparations = (
+      await Promise.all(
+        patients.map((patient) => migratePatientChecklist(patient))
+      )
+    ).filter(Boolean);
+
+    return res.status(200).json({
+      success: true,
+      count: preparations.length,
+      preparations: preparations.map(serializePreparation),
+    });
+  } catch (error) {
+    console.error("Get Preparations Error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to fetch preparations",
+    });
+  }
+}
+
+async function getPreparation(req, res) {
+  try {
+    const patient = await findOwnedPatient(req.params.patientId, req.user.userId);
+    if (!patient) {
+      return res.status(404).json({
+        success: false,
+        message: "Patient preparation not found",
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      preparation: serializePreparation(patient),
+    });
+  } catch (error) {
+    console.error("Get Preparation Error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to fetch preparation",
+    });
+  }
+}
+
+async function createChecklist(req, res) {
+  try {
+    const { steps } = req.body;
+    if (steps !== undefined && !validateSteps(steps)) {
+      return res.status(400).json({
+        success: false,
+        message: "Each checklist step must have a title and a boolean completion state",
+      });
+    }
+
+    const patient = await Patient.findOne({
+      _id: req.params.patientId,
+      createdBy: req.user.userId,
+    });
+    if (!patient) {
+>>>>>>> 90c58b3 (Save PrepBuddy AI progress)
       return res.status(404).json({
         success: false,
         message: "Patient not found",
       });
     }
 
+<<<<<<< HEAD
     // Verify appointment belongs to logged-in user
     const existingAppointment = await Appointment.findOne({
       _id: appointment,
@@ -228,6 +343,75 @@ const updatePreparationStep = async (req, res) => {
 
     const step = preparation.steps.id(stepId);
 
+=======
+    if (!patient.preparationChecklistInitialized) {
+      const checklistSteps =
+        steps === undefined
+          ? buildDefaultSteps(patient.preparationStatus)
+          : steps.map((step) => ({
+              title: step.title.trim(),
+              completed: step.completed === true,
+            }));
+      const summary = getChecklistSummary(checklistSteps);
+      await Patient.updateOne(
+        {
+          _id: patient._id,
+          createdBy: req.user.userId,
+          preparationChecklistInitialized: { $ne: true },
+        },
+        {
+          $set: {
+            preparationSteps: checklistSteps,
+            preparationChecklistInitialized: true,
+            preparationStatus: summary.status,
+          },
+        },
+        { runValidators: true }
+      );
+    }
+
+    const updatedPatient = await findOwnedPatient(
+      req.params.patientId,
+      req.user.userId
+    );
+    if (!updatedPatient) {
+      return res.status(404).json({
+        success: false,
+        message: "Patient preparation not found",
+      });
+    }
+    return res.status(200).json({
+      success: true,
+      preparation: serializePreparation(updatedPatient),
+    });
+  } catch (error) {
+    console.error("Create Preparation Checklist Error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to create preparation checklist",
+    });
+  }
+}
+
+async function updatePreparationStep(req, res) {
+  try {
+    if (typeof req.body.completed !== "boolean") {
+      return res.status(400).json({
+        success: false,
+        message: "Step completion must be true or false",
+      });
+    }
+
+    const patient = await findOwnedPatient(req.params.patientId, req.user.userId);
+    if (!patient) {
+      return res.status(404).json({
+        success: false,
+        message: "Patient preparation not found",
+      });
+    }
+
+    const step = patient.preparationSteps.id(req.params.stepId);
+>>>>>>> 90c58b3 (Save PrepBuddy AI progress)
     if (!step) {
       return res.status(404).json({
         success: false,
@@ -235,6 +419,7 @@ const updatePreparationStep = async (req, res) => {
       });
     }
 
+<<<<<<< HEAD
     step.completed = completed;
 
     if (completed) {
@@ -319,3 +504,88 @@ module.exports = {
   updatePreparationStep,
   deletePreparation,
 };
+=======
+    step.completed = req.body.completed;
+    const summary = getChecklistSummary(patient.preparationSteps);
+    patient.preparationStatus = summary.status;
+    await patient.save();
+
+    return res.status(200).json({
+      success: true,
+      preparation: serializePreparation(patient),
+    });
+  } catch (error) {
+    console.error("Update Preparation Step Error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to update preparation step",
+    });
+  }
+}
+
+async function updatePreparation(req, res) {
+  try {
+    const { status } = req.body;
+    if (!PREPARATION_STATUSES.includes(status)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid preparation status",
+      });
+    }
+
+    const patient = await findOwnedPatient(req.params.patientId, req.user.userId);
+    if (!patient) {
+      return res.status(404).json({
+        success: false,
+        message: "Patient preparation not found",
+      });
+    }
+
+    const steps = patient.preparationSteps;
+    if (status === "completed" && steps.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: "An empty checklist cannot be marked completed",
+      });
+    }
+    if (status === "in_progress" && steps.length < 2) {
+      return res.status(400).json({
+        success: false,
+        message: "At least two checklist steps are needed for in-progress status",
+      });
+    }
+
+    const completedCount =
+      status === "completed"
+        ? steps.length
+        : status === "in_progress"
+          ? Math.floor(steps.length / 2)
+          : 0;
+    steps.forEach((step, index) => {
+      step.completed = index < completedCount;
+    });
+    const summary = getChecklistSummary(steps);
+    patient.preparationStatus = summary.status;
+    await patient.save();
+
+    return res.status(200).json({
+      success: true,
+      preparation: serializePreparation(patient),
+    });
+  } catch (error) {
+    console.error("Update Preparation Error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to update preparation",
+    });
+  }
+}
+
+module.exports = {
+  getPreparations,
+  getPreparation,
+  createChecklist,
+  updatePreparationStep,
+  updatePreparation,
+};
+>>>>>>> 90c58b3 (Save PrepBuddy AI progress)

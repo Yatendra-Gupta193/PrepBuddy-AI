@@ -8,6 +8,10 @@ const patientRoutes = require("./routes/patientRoutes");
 const appointmentRoutes = require("./routes/appointmentRoutes");
 const preparationRoutes = require("./routes/preparationRoutes");
 const reminderRoutes = require("./routes/reminderRoutes");
+<<<<<<< HEAD
+=======
+
+>>>>>>> 90c58b3 (Save PrepBuddy AI progress)
 const app = express();
 
 app.use(cors());

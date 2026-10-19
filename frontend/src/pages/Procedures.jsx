@@ -17,36 +17,41 @@ import {
   Settings,
   X,
 } from "lucide-react";
+import { api, getPatientProgress, getPatientStatus } from "../services/api";
+import usePatients from "../hooks/usePatients";
+import useAuth from "../hooks/useAuth";
+import useAppointments from "../hooks/useAppointments";
+import { localDateTimeToISO, toLocalDateTimeInput } from "../services/dateTime";
 
-const STORAGE_KEY = "prepbuddy_patients";
-
-/* =========================
-   PATIENT STORAGE
-========================= */
-
-function getPatients() {
-  try {
-    const saved = localStorage.getItem(STORAGE_KEY);
-
-    if (!saved) {
-      return [];
-    }
-
-    const parsed = JSON.parse(saved);
-
-    return Array.isArray(parsed) ? parsed : [];
-  } catch (error) {
-    console.error("Unable to load patients:", error);
-    return [];
-  }
+function toLocalDateTime(date) {
+  return toLocalDateTimeInput(date);
 }
 
-function savePatients(patients) {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(patients));
-
-  // Notify other PrepBuddy pages
-  window.dispatchEvent(
-    new Event("prepbuddy-patients-updated")
+function selectPatientAppointment(appointments, patientId, now = Date.now()) {
+  const related = appointments
+    .filter((appointment) => {
+      const associatedPatient =
+        appointment.patient?._id || appointment.patient;
+      return String(associatedPatient) === String(patientId);
+    })
+    .map((appointment) => ({
+      appointment,
+      timestamp: new Date(appointment.appointmentDate).getTime(),
+    }))
+    .filter((item) => Number.isFinite(item.timestamp));
+  const activeAppointments = related.filter(
+    (item) => item.appointment.status !== "cancelled"
+  );
+  const upcoming = activeAppointments
+    .filter((item) => item.timestamp >= now)
+    .sort((left, right) => left.timestamp - right.timestamp);
+  return (
+    upcoming[0]?.appointment ||
+    activeAppointments.sort((left, right) => right.timestamp - left.timestamp)[0]
+      ?.appointment ||
+    related.sort((left, right) => right.timestamp - left.timestamp)[0]
+      ?.appointment ||
+    null
   );
 }
 
@@ -55,23 +60,11 @@ function savePatients(patients) {
 ========================= */
 
 function getProgress(patient) {
-  const progress = Number(patient?.progress);
-
-  if (!Number.isFinite(progress)) {
-    return 0;
-  }
-
-  return Math.max(0, Math.min(100, progress));
+  return getPatientProgress(patient);
 }
 
 function getStatus(patient) {
-  const progress = getProgress(patient);
-
-  if (progress >= 100) {
-    return "Ready";
-  }
-
-  return "In Progress";
+  return getPatientStatus(patient);
 }
 
 function formatDate(date) {
@@ -79,7 +72,9 @@ function formatDate(date) {
     return "Not scheduled";
   }
 
-  const parsedDate = new Date(`${date}T00:00:00`);
+  const parsedDate = /^\d{4}-\d{2}-\d{2}$/.test(date)
+    ? new Date(`${date}T00:00:00`)
+    : new Date(date);
 
   if (Number.isNaN(parsedDate.getTime())) {
     return date;
@@ -109,8 +104,27 @@ function getInitials(name = "") {
 
 function Procedures() {
   const navigate = useNavigate();
+  const { user, logout } = useAuth();
+  const accountId = user?.id || user?._id;
+  const {
+    patients,
+    loading: patientsLoading,
+    error,
+    refresh,
+  } = usePatients(accountId);
+  const {
+    appointments,
+    loading: appointmentsLoading,
+    error: appointmentError,
+    refresh: refreshAppointments,
+  } = useAppointments(accountId);
+  const loading = patientsLoading || appointmentsLoading;
+  const [nowTime, setNowTime] = useState(() => Date.now());
 
-  const [patients, setPatients] = useState([]);
+  useEffect(() => {
+    const interval = window.setInterval(() => setNowTime(Date.now()), 60_000);
+    return () => window.clearInterval(interval);
+  }, []);
 
   const [searchTerm, setSearchTerm] = useState("");
 
@@ -127,67 +141,39 @@ function Procedures() {
   const [scheduleDate, setScheduleDate] = useState("");
 
   const [scheduleTime, setScheduleTime] = useState("");
+  const [scheduleStatus, setScheduleStatus] = useState("scheduled");
 
   const [scheduleError, setScheduleError] = useState("");
 
   const [isSaving, setIsSaving] = useState(false);
 
   /* =========================
-     LOAD PATIENTS
-  ========================= */
-
-  useEffect(() => {
-    setPatients(getPatients());
-  }, []);
-
-  /* =========================
-     REFRESH PATIENT DATA
-  ========================= */
-
-  useEffect(() => {
-    const refreshPatients = () => {
-      setPatients(getPatients());
-    };
-
-    window.addEventListener(
-      "prepbuddy-patients-updated",
-      refreshPatients
-    );
-
-    window.addEventListener(
-      "storage",
-      refreshPatients
-    );
-
-    return () => {
-      window.removeEventListener(
-        "prepbuddy-patients-updated",
-        refreshPatients
-      );
-
-      window.removeEventListener(
-        "storage",
-        refreshPatients
-      );
-    };
-  }, []);
-
-  /* =========================
      NORMALIZE PROCEDURES
   ========================= */
 
   const procedures = useMemo(() => {
-    return patients.map((patient) => ({
-      ...patient,
+    return patients.map((patient) => {
+      const appointment = selectPatientAppointment(
+        appointments,
+        patient._id,
+        nowTime
+      );
+      const schedule = toLocalDateTime(appointment?.appointmentDate);
 
-      progress: getProgress(patient),
-
-      status: getStatus(patient),
-
-      procedure:
-        patient.procedure || "Not specified",
-    }));
-  }, [patients]);
+      return {
+        ...patient,
+        id: patient._id,
+        appointmentId: appointment?._id,
+        appointmentStatus: appointment?.status || "",
+        doctorName: appointment?.doctorName || "",
+        procedureDate: schedule.date,
+        procedureTime: schedule.time,
+        progress: getProgress(patient),
+        status: getStatus(patient),
+        procedure: patient.procedure || "Not specified",
+      };
+    });
+  }, [patients, appointments, nowTime]);
 
   /* =========================
      PROCEDURE TYPES
@@ -222,18 +208,23 @@ function Procedures() {
         patient.status === "In Progress"
     ).length;
 
-    const scheduled = procedures.filter(
-      (patient) =>
-        patient.procedureDate
-    ).length;
+    const currentAppointments = appointments.filter(
+      (appointment) =>
+        appointment.status === "scheduled" ||
+        appointment.status === "confirmed"
+    );
+    const upcomingAppointments = currentAppointments.filter((appointment) => {
+      const timestamp = new Date(appointment.appointmentDate).getTime();
+      return Number.isFinite(timestamp) && timestamp >= nowTime;
+    }).length;
 
     return {
       total,
       ready,
       inProgress,
-      scheduled,
+      scheduled: upcomingAppointments,
     };
-  }, [procedures]);
+  }, [procedures, appointments, nowTime]);
 
   /* =========================
      SEARCH + FILTERS
@@ -291,6 +282,7 @@ function Procedures() {
     setScheduleTime(
       patient.procedureTime || ""
     );
+    setScheduleStatus(patient.appointmentStatus || "scheduled");
 
     setScheduleError("");
   }
@@ -309,6 +301,7 @@ function Procedures() {
     setScheduleDate("");
 
     setScheduleTime("");
+    setScheduleStatus("scheduled");
 
     setScheduleError("");
   }
@@ -317,7 +310,7 @@ function Procedures() {
      SAVE PROCEDURE SCHEDULE
   ========================= */
 
-  function handleScheduleSubmit(event) {
+  async function handleScheduleSubmit(event) {
     event.preventDefault();
 
     if (!schedulePatient) {
@@ -343,48 +336,65 @@ function Procedures() {
     setIsSaving(true);
 
     try {
-      const currentPatients =
-        getPatients();
-
-      const updatedPatients =
-        currentPatients.map((patient) => {
-          if (
-            patient.id !==
-            schedulePatient.id
-          ) {
-            return patient;
-          }
-
-          return {
-            ...patient,
-
-            procedureDate:
-              scheduleDate,
-
-            procedureTime:
-              scheduleTime,
-          };
-        });
-
-      savePatients(updatedPatients);
-
-      setPatients(updatedPatients);
+      const appointmentData = {
+        patient: schedulePatient.id,
+        appointmentDate: localDateTimeToISO(scheduleDate, scheduleTime),
+        appointmentType: schedulePatient.procedure,
+        doctorName: schedulePatient.doctorName || "",
+        status: scheduleStatus,
+      };
+      if (schedulePatient.appointmentId) {
+        await api.appointments.update(
+            schedulePatient.appointmentId,
+            appointmentData
+          );
+      } else {
+        await api.appointments.create(appointmentData);
+      }
+      window.dispatchEvent(new Event("prepbuddy-patients-updated"));
+      window.dispatchEvent(new Event("prepbuddy-appointments-updated"));
+      await refreshAppointments();
 
       setSchedulePatient(null);
 
       setScheduleDate("");
 
       setScheduleTime("");
+      setScheduleStatus("scheduled");
 
       setScheduleError("");
     } catch (error) {
-      console.error(
-        "Unable to schedule procedure:",
-        error
-      );
-
       setScheduleError(
-        "Unable to save the schedule. Please try again."
+        error.message || "Unable to save the schedule. Please try again."
+      );
+    } finally {
+      setIsSaving(false);
+    }
+  }
+
+  async function handleDeleteAppointment() {
+    if (!schedulePatient?.appointmentId || isSaving) return;
+    if (
+      !window.confirm(
+        `Remove the appointment for ${schedulePatient.name}?`
+      )
+    ) {
+      return;
+    }
+    setIsSaving(true);
+    setScheduleError("");
+    try {
+      await api.appointments.delete(schedulePatient.appointmentId);
+      window.dispatchEvent(new Event("prepbuddy-patients-updated"));
+      window.dispatchEvent(new Event("prepbuddy-appointments-updated"));
+      await refreshAppointments();
+      setSchedulePatient(null);
+      setScheduleDate("");
+      setScheduleTime("");
+      setScheduleStatus("scheduled");
+    } catch (requestError) {
+      setScheduleError(
+        requestError.message || "Unable to remove the appointment."
       );
     } finally {
       setIsSaving(false);
@@ -401,7 +411,7 @@ function Procedures() {
         <div className="flex h-16 items-center justify-between px-6">
 
           <Link
-            to="/"
+            to="/clinic-dashboard"
             className="flex items-center gap-3"
           >
 
@@ -427,7 +437,12 @@ function Procedures() {
 
           <div className="flex items-center gap-4">
 
-            <button className="relative rounded-lg p-2 text-slate-400 hover:bg-slate-800 hover:text-white">
+            <button
+              type="button"
+              onClick={() => navigate("/alerts")}
+              className="relative rounded-lg p-2 text-slate-400 hover:bg-slate-800 hover:text-white"
+              aria-label="Open alerts"
+            >
 
               <BellRing size={19} />
 
@@ -446,11 +461,11 @@ function Procedures() {
               <div className="hidden sm:block">
 
                 <p className="text-sm font-medium">
-                  Clinic Staff
+                  {user?.name || "Clinic Staff"}
                 </p>
 
                 <p className="text-xs text-slate-500">
-                  City Care Clinic
+                  {user?.email || user?.role || "Clinic account"}
                 </p>
 
               </div>
@@ -497,22 +512,38 @@ function Procedures() {
             Procedures
           </Link>
 
-          <button className="flex w-full items-center gap-3 rounded-xl px-3 py-3 text-sm text-slate-400 hover:bg-slate-900 hover:text-white">
+          <button
+            type="button"
+            onClick={() => navigate("/protocols")}
+            className="flex w-full items-center gap-3 rounded-xl px-3 py-3 text-sm text-slate-400 hover:bg-slate-900 hover:text-white"
+          >
             <ClipboardList size={19} />
             Protocols
           </button>
 
-          <button className="flex w-full items-center gap-3 rounded-xl px-3 py-3 text-sm text-slate-400 hover:bg-slate-900 hover:text-white">
+          <button
+            type="button"
+            onClick={() => navigate("/reminders")}
+            className="flex w-full items-center gap-3 rounded-xl px-3 py-3 text-sm text-slate-400 hover:bg-slate-900 hover:text-white"
+          >
             <BellRing size={19} />
             Reminders
           </button>
 
-          <button className="flex w-full items-center gap-3 rounded-xl px-3 py-3 text-sm text-slate-400 hover:bg-slate-900 hover:text-white">
+          <button
+            type="button"
+            onClick={() => navigate("/alerts")}
+            className="flex w-full items-center gap-3 rounded-xl px-3 py-3 text-sm text-slate-400 hover:bg-slate-900 hover:text-white"
+          >
             <Clock3 size={19} />
             Alerts
           </button>
 
-          <button className="flex w-full items-center gap-3 rounded-xl px-3 py-3 text-sm text-slate-400 hover:bg-slate-900 hover:text-white">
+          <button
+            type="button"
+            onClick={() => navigate("/ai-assistant")}
+            className="flex w-full items-center gap-3 rounded-xl px-3 py-3 text-sm text-slate-400 hover:bg-slate-900 hover:text-white"
+          >
             <UserRound size={19} />
             AI Assistant
           </button>
@@ -532,13 +563,17 @@ function Procedures() {
 
         <div className="border-t border-slate-800 p-4">
 
-          <Link
-            to="/login"
-            className="flex items-center gap-3 rounded-xl px-3 py-3 text-sm text-slate-400 hover:bg-slate-900 hover:text-white"
+          <button
+            type="button"
+            onClick={() => {
+              logout();
+              navigate("/login", { replace: true });
+            }}
+            className="flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left text-sm text-slate-400 hover:bg-slate-900 hover:text-white"
           >
             <LogOut size={19} />
             Logout
-          </Link>
+          </button>
 
         </div>
 
@@ -627,7 +662,7 @@ function Procedures() {
               </div>
 
               <p className="mt-4 text-xs text-slate-500">
-                Date assigned
+                Upcoming scheduled or confirmed appointments
               </p>
 
             </div>
@@ -741,6 +776,9 @@ function Procedures() {
                   <option value="All">
                     All Status
                   </option>
+                  <option value="Pending">
+                    Pending
+                  </option>
 
                   <option value="Ready">
                     Ready
@@ -803,7 +841,25 @@ function Procedures() {
 
             </div>
 
-            {filteredProcedures.length === 0 ? (
+            {error || appointmentError ? (
+              <div role="alert" className="p-6 text-sm text-red-300">
+                {error || appointmentError}
+                <button
+                  type="button"
+                  onClick={() => {
+                    refresh();
+                    window.dispatchEvent(new Event("prepbuddy-appointments-updated"));
+                  }}
+                  className="ml-3 underline"
+                >
+                  Retry
+                </button>
+              </div>
+            ) : loading ? (
+              <p role="status" className="p-12 text-center text-slate-400">
+                Loading procedures...
+              </p>
+            ) : filteredProcedures.length === 0 ? (
 
               <div className="p-12 text-center">
 
@@ -891,6 +947,11 @@ function Procedures() {
                             {patient.procedureTime}
                           </p>
                         )}
+                        {patient.appointmentStatus && (
+                          <p className="mt-1 text-xs capitalize text-blue-400">
+                            {patient.appointmentStatus}
+                          </p>
+                        )}
 
                       </div>
 
@@ -940,7 +1001,7 @@ function Procedures() {
 
                           </span>
 
-                        ) : (
+                        ) : patient.status === "In Progress" ? (
 
                           <span className="inline-flex items-center gap-1.5 rounded-full bg-blue-500/10 px-3 py-1.5 text-xs font-medium text-blue-400">
 
@@ -949,6 +1010,16 @@ function Procedures() {
                             />
 
                             In Progress
+
+                          </span>
+
+                        ) : (
+
+                          <span className="inline-flex items-center gap-1.5 rounded-full bg-amber-500/10 px-3 py-1.5 text-xs font-medium text-amber-400">
+
+                            <Clock3 size={14} />
+
+                            Pending
 
                           </span>
 
@@ -1152,6 +1223,25 @@ function Procedures() {
 
                 </div>
 
+                <div>
+                  <label className="mb-2 block text-sm font-medium text-slate-300">
+                    Appointment Status
+                  </label>
+                  <select
+                    value={scheduleStatus}
+                    onChange={(event) => {
+                      setScheduleStatus(event.target.value);
+                      setScheduleError("");
+                    }}
+                    className="w-full rounded-xl border border-slate-800 bg-slate-950 px-4 py-3 text-white outline-none focus:border-blue-500"
+                  >
+                    <option value="scheduled">Scheduled</option>
+                    <option value="confirmed">Confirmed</option>
+                    <option value="completed">Completed</option>
+                    <option value="cancelled">Cancelled</option>
+                  </select>
+                </div>
+
                 {/* ERROR */}
 
                 {scheduleError && (
@@ -1167,6 +1257,17 @@ function Procedures() {
               {/* BUTTONS */}
 
               <div className="flex justify-end gap-3 border-t border-slate-800 p-6">
+
+                {schedulePatient.appointmentId && (
+                  <button
+                    type="button"
+                    onClick={handleDeleteAppointment}
+                    disabled={isSaving}
+                    className="mr-auto rounded-xl border border-red-500/30 px-5 py-3 text-sm font-medium text-red-300 transition hover:bg-red-500/10 disabled:opacity-50"
+                  >
+                    {isSaving ? "Saving..." : "Remove Appointment"}
+                  </button>
+                )}
 
                 <button
                   type="button"

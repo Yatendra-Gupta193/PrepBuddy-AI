@@ -1,4 +1,5 @@
 const express = require("express");
+<<<<<<< HEAD
 const router = express.Router();
 
 const authMiddleware = require("../middleware/authMiddleware");
@@ -34,3 +35,21 @@ router.patch("/:id/status", updateReminderStatus);
 router.delete("/:id", deleteReminder);
 
 module.exports = router;
+=======
+const authMiddleware = require("../middleware/authMiddleware");
+const {
+  createReminder,
+  getReminders,
+  updateReminder,
+  deleteReminder,
+} = require("../controllers/reminderController");
+
+const router = express.Router();
+
+router.post("/", authMiddleware, createReminder);
+router.get("/", authMiddleware, getReminders);
+router.patch("/:id", authMiddleware, updateReminder);
+router.delete("/:id", authMiddleware, deleteReminder);
+
+module.exports = router;
+>>>>>>> 90c58b3 (Save PrepBuddy AI progress)

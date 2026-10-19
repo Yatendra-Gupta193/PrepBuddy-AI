@@ -1,4 +1,31 @@
 const Patient = require("../models/patient");
+const Appointment = require("../models/appointment");
+const Reminder = require("../models/reminder");
+const {
+  buildDefaultSteps,
+  migratePatientChecklist,
+} = require("../utils/preparationChecklist");
+
+const PATIENT_UPDATE_FIELDS = [
+  "name",
+  "email",
+  "phone",
+  "age",
+  "gender",
+  "diagnosis",
+  "procedure",
+  "procedureDate",
+  "medicalHistory",
+  "allergies",
+  "medications",
+];
+
+const pickFields = (source, fields) =>
+  Object.fromEntries(
+    fields
+      .filter((field) => Object.hasOwn(source, field))
+      .map((field) => [field, source[field]])
+  );
 
 // =====================================
 // CREATE PATIENT
@@ -40,6 +67,8 @@ const createPatient = async (req, res) => {
       medicalHistory,
       allergies,
       medications,
+      preparationSteps: buildDefaultSteps(),
+      preparationChecklistInitialized: true,
 
       // authMiddleware should provide logged-in user
       createdBy: req.user.userId,
@@ -68,11 +97,16 @@ const getPatients = async (req, res) => {
     const patients = await Patient.find({
       createdBy: req.user.userId,
     }).sort({ createdAt: -1 });
+    const migratedPatients = (
+      await Promise.all(
+        patients.map((patient) => migratePatientChecklist(patient))
+      )
+    ).filter(Boolean);
 
     return res.status(200).json({
       success: true,
-      count: patients.length,
-      patients,
+      count: migratedPatients.length,
+      patients: migratedPatients,
     });
   } catch (error) {
     console.error("Get Patients Error:", error);
@@ -101,9 +135,10 @@ const getPatientById = async (req, res) => {
       });
     }
 
+    const migratedPatient = await migratePatientChecklist(patient);
     return res.status(200).json({
       success: true,
-      patient,
+      patient: migratedPatient,
     });
   } catch (error) {
     console.error("Get Patient Error:", error);
@@ -120,12 +155,13 @@ const getPatientById = async (req, res) => {
 // =====================================
 const updatePatient = async (req, res) => {
   try {
+    const updates = pickFields(req.body, PATIENT_UPDATE_FIELDS);
     const patient = await Patient.findOneAndUpdate(
       {
         _id: req.params.id,
         createdBy: req.user.userId,
       },
-      req.body,
+      { $set: updates },
       {
         new: true,
         runValidators: true,
@@ -170,6 +206,17 @@ const deletePatient = async (req, res) => {
         message: "Patient not found",
       });
     }
+
+    await Promise.all([
+      Appointment.deleteMany({
+        patient: patient._id,
+        createdBy: req.user.userId,
+      }),
+      Reminder.deleteMany({
+        patient: patient._id,
+        createdBy: req.user.userId,
+      }),
+    ]);
 
     return res.status(200).json({
       success: true,

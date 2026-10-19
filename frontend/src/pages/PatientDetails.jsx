@@ -8,138 +8,73 @@ import {
   FileText, Phone,
   Mail, X, Pencil, Save,
 } from "lucide-react"
+import {
+  api,
+  getPatientProgress,
+  getPatientStatus,
+  notifyPatientsChanged,
+  notifyRemindersChanged,
+} from "../services/api"
+import useAuth from "../hooks/useAuth"
+import { localDateTimeToISO, toLocalDateTimeInput } from "../services/dateTime"
 
-const defaultPatients = [
-  {
-    id: "PB-1024",
-    initials: "RS",
-    name: "Rahul Sharma",
-    age: 42,
-    procedure: "Colonoscopy",
-    date: "Aug 24, 2026",
-    time: "10:30 AM",
-    progress: 92,
-    status: "Ready",
-    phone: "+91 98765 43210",
-    email: "rahul@example.com",
-  },
-  {
-    id: "PB-1025",
-    initials: "AP",
-    name: "Anjali Patel",
-    age: 36,
-    procedure: "Endoscopy",
-    date: "Aug 24, 2026",
-    time: "02:00 PM",
-    progress: 64,
-    status: "At Risk",
-    phone: "+91 98765 43211",
-    email: "anjali@example.com",
-  },
-  {
-    id: "PB-1026",
-    initials: "VK",
-    name: "Vikram Kumar",
-    age: 51,
-    procedure: "Colonoscopy",
-    date: "Aug 25, 2026",
-    time: "09:00 AM",
-    progress: 38,
-    status: "Critical",
-    phone: "+91 98765 43212",
-    email: "vikram@example.com",
-  },
-  {
-    id: "PB-1027",
-    initials: "SM",
-    name: "Sneha Mehta",
-    age: 29,
-    procedure: "Endoscopy",
-    date: "Aug 25, 2026",
-    time: "11:30 AM",
-    progress: 81,
-    status: "In Progress",
-    phone: "+91 98765 43213",
-    email: "sneha@example.com",
-  },
-  {
-    id: "PB-1028",
-    initials: "AM",
-    name: "Amit Malhotra",
-    age: 45,
-    procedure: "Colonoscopy",
-    date: "Aug 26, 2026",
-    time: "09:30 AM",
-    progress: 76,
-    status: "In Progress",
-    phone: "+91 98765 43214",
-    email: "amit@example.com",
-  },
-  {
-    id: "PB-1029",
-    initials: "NK",
-    name: "Neha Kapoor",
-    age: 33,
-    procedure: "Endoscopy",
-    date: "Aug 26, 2026",
-    time: "01:00 PM",
-    progress: 95,
-    status: "Ready",
-    phone: "+91 98765 43215",
-    email: "neha@example.com",
-  },
-]
-
-function normalizePatient(patient) {
+function normalizePatient(patient, appointment = null, preparation = null) {
   if (!patient) return null
+
+  const appointmentDate = appointment?.appointmentDate
+    ? new Date(appointment.appointmentDate)
+    : null
+  const appointmentTime =
+    appointmentDate && !Number.isNaN(appointmentDate.getTime())
+      ? `${String(appointmentDate.getHours()).padStart(2, "0")}:${String(appointmentDate.getMinutes()).padStart(2, "0")}`
+      : ""
+  const appointmentLocalDate =
+    appointmentDate && !Number.isNaN(appointmentDate.getTime())
+      ? `${appointmentDate.getFullYear()}-${String(appointmentDate.getMonth() + 1).padStart(2, "0")}-${String(appointmentDate.getDate()).padStart(2, "0")}`
+      : ""
 
   return {
     ...patient,
-    // Procedures.jsx stores these fields.
-    // Keep date/time aliases for backward compatibility with older records.
-    date: patient.procedureDate || patient.date || "",
-    time: patient.procedureTime || patient.time || "",
+    id: patient._id,
+    preparationSteps: preparation?.steps || patient.preparationSteps || [],
+    preparationStatus:
+      preparation?.status ||
+      preparation?.preparationStatus ||
+      patient.preparationStatus,
+    progress:
+      preparation?.progress ??
+      getPatientProgress({
+        ...patient,
+        preparationSteps: preparation?.steps || patient.preparationSteps || [],
+      }),
+    status: getPatientStatus({
+      ...patient,
+      preparationSteps: preparation?.steps || patient.preparationSteps || [],
+    }),
+    appointmentId: appointment?._id,
+    appointmentDate: appointment?.appointmentDate,
+    doctor: appointment?.doctorName || "",
+    date: appointmentLocalDate,
+    time: appointmentTime,
   }
-}
-
-function getStoredPatients() {
-  try {
-    const saved = JSON.parse(
-      localStorage.getItem("prepbuddy_patients") || "[]"
-    )
-
-    return Array.isArray(saved) ? saved : []
-  } catch (error) {
-    console.error("Error reading patients:", error)
-    return []
-  }
-}
-
-function saveStoredPatients(patients) {
-  localStorage.setItem(
-    "prepbuddy_patients",
-    JSON.stringify(patients)
-  )
-
-  window.dispatchEvent(
-    new Event("prepbuddy-patients-updated")
-  )
 }
 
 function formatProcedureDate(date) {
   if (!date) return "Not scheduled"
 
-  // Stored scheduling dates are normally YYYY-MM-DD.
-  if (/^\d{4}-\d{2}-\d{2}$/.test(date)) {
-    const parsed = new Date(`${date}T00:00:00`)
+  const dateOnly = /^\d{4}-\d{2}-\d{2}/.test(date)
+    ? date.slice(0, 10)
+    : null
+  const parsed = dateOnly
+    ? new Date(`${dateOnly}T00:00:00`)
+    : new Date(date)
 
-    if (!Number.isNaN(parsed.getTime())) {
-      return parsed.toLocaleDateString("en-US", {
-        month: "short",
-        day: "numeric",
-        year: "numeric",
-      })
-    }
+  if (!Number.isNaN(parsed.getTime())) {
+    return parsed.toLocaleDateString("en-US", {
+      month: "short",
+      day: "numeric",
+      year: "numeric",
+    })
   }
 
   return date
@@ -148,6 +83,7 @@ function formatProcedureDate(date) {
 
 function PatientDetails() {
   const { id } = useParams()
+  const { user } = useAuth()
 
   const [patient, setPatient] = useState(null)
 
@@ -157,6 +93,13 @@ function PatientDetails() {
 
   const [message, setMessage] = useState("")
   const [reminderSent, setReminderSent] = useState(false)
+  const [loading, setLoading] = useState(true)
+  const [preparationLoading, setPreparationLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const [savingStepId, setSavingStepId] = useState("")
+  const [creatingChecklist, setCreatingChecklist] = useState(false)
+  const [error, setError] = useState("")
+  const [preparation, setPreparation] = useState(null)
 
   const [editForm, setEditForm] = useState({
     name: "",
@@ -173,50 +116,80 @@ function PatientDetails() {
   // --------------------------------------------------
 
   useEffect(() => {
-    const loadPatient = () => {
+    let active = true
+    const loadPatient = async () => {
+      setLoading(true)
+      setPreparationLoading(true)
+      setError("")
       try {
-        const savedPatients = getStoredPatients()
-
-        // Prefer the live patient record from localStorage.
-        // This keeps PatientDetails in sync with Procedures.jsx.
-        const savedPatient = savedPatients.find(
-          (item) => item.id === id
-        )
-
-        if (savedPatient) {
-          setPatient(normalizePatient(savedPatient))
-          return
+        const [response, appointmentResponse, preparationResponse] =
+          await Promise.all([
+            api.patients.get(id),
+            api.appointments.list(),
+            api.preparations.get(id),
+          ])
+        const appointment = (appointmentResponse.appointments || [])
+          .filter(
+            (item) =>
+              String(item.patient?._id || item.patient) ===
+                String(response.patient._id) &&
+              item.status !== "cancelled"
+          )
+          .sort((left, right) => {
+            const now = Date.now()
+            const leftTime = new Date(left.appointmentDate).getTime()
+            const rightTime = new Date(right.appointmentDate).getTime()
+            const leftUpcoming = leftTime >= now
+            const rightUpcoming = rightTime >= now
+            if (leftUpcoming !== rightUpcoming) return leftUpcoming ? -1 : 1
+            return leftUpcoming
+              ? leftTime - rightTime
+              : rightTime - leftTime
+          })[0]
+        if (active) {
+          setPreparation(preparationResponse.preparation)
+          setPatient(
+            normalizePatient(
+              response.patient,
+              appointment,
+              preparationResponse.preparation
+            )
+          )
         }
-
-        // Fall back to demo patients only when no live record exists.
-        const fallbackPatient = defaultPatients.find(
-          (item) => item.id === id
-        )
-
-        setPatient(normalizePatient(fallbackPatient) || null)
-      } catch (error) {
-        console.error("Error loading patient:", error)
-        setPatient(null)
+      } catch (requestError) {
+        if (active) {
+          setPatient(null)
+          setError(requestError.message || "Unable to load this patient.")
+        }
+      } finally {
+        if (active) {
+          setLoading(false)
+          setPreparationLoading(false)
+        }
       }
     }
 
     loadPatient()
 
-    const refreshPatient = () => loadPatient()
-
     window.addEventListener(
       "prepbuddy-patients-updated",
-      refreshPatient
+      loadPatient
+    )
+    window.addEventListener(
+      "prepbuddy-preparations-updated",
+      loadPatient
     )
 
-    window.addEventListener("storage", refreshPatient)
-
     return () => {
+      active = false
       window.removeEventListener(
         "prepbuddy-patients-updated",
-        refreshPatient
+        loadPatient
       )
-      window.removeEventListener("storage", refreshPatient)
+      window.removeEventListener(
+        "prepbuddy-preparations-updated",
+        loadPatient
+      )
     }
   }, [id])
 
@@ -224,42 +197,32 @@ function PatientDetails() {
   // SEND REMINDER
   // --------------------------------------------------
 
-  const handleSendReminder = () => {
-    if (!patient) return
-
+  const handleSendReminder = async () => {
+    if (!patient || saving) return
+    setSaving(true)
+    setError("")
     try {
-      const savedReminders = JSON.parse(
-        localStorage.getItem("prepbuddy_reminders") || "[]"
-      )
-
-      const newReminder = {
-        id: `REM-${Date.now()}`,
-        patientId: patient.id,
-        patientName: patient.name,
-        procedure: patient.procedure,
-        date: patient.procedureDate || patient.date,
-        time: patient.procedureTime || patient.time,
-        createdAt: new Date().toISOString(),
-        status: "Sent",
-      }
-
-      const updatedReminders = [
-        ...savedReminders,
-        newReminder,
-      ]
-
-      localStorage.setItem(
-        "prepbuddy_reminders",
-        JSON.stringify(updatedReminders)
-      )
-
+      await api.reminders.create({
+        patient: patient.id,
+        type: "Preparation Reminder",
+        message: `Please review your preparation instructions for your upcoming ${patient.procedure || "procedure"}.`,
+        scheduledAt:
+          patient.appointmentDate ||
+          new Date().toISOString(),
+        channel: patient.email ? "Email" : "Notification",
+        status: "Scheduled",
+        priority: "Medium",
+      })
+      notifyRemindersChanged()
       setReminderSent(true)
 
       setTimeout(() => {
         setReminderSent(false)
       }, 3000)
-    } catch (error) {
-      console.error("Error sending reminder:", error)
+    } catch (requestError) {
+      setError(requestError.message || "Unable to create reminder.")
+    } finally {
+      setSaving(false)
     }
   }
 
@@ -281,7 +244,7 @@ function PatientDetails() {
       `Hello ${patient.name},
 
 This is a reminder from PrepBuddy regarding your upcoming ${patient.procedure} scheduled on ${
-        formatProcedureDate(patient.procedureDate || patient.date)
+        formatProcedureDate(patient.date)
       } at ${patient.procedureTime || patient.time || "the scheduled time"}.
 
 Please make sure you complete all preparation instructions before your procedure.
@@ -320,95 +283,64 @@ PrepBuddy Clinic Management`
   // PREPARATION STEPS
   // --------------------------------------------------
 
-  const getPreparationSteps = () => {
-    const progress = patient?.progress || 0
-
-    return [
-      {
-        title: "Preparation instructions reviewed",
-        completed: progress >= 20,
-      },
-      {
-        title: "Patient confirmation received",
-        completed: progress >= 50,
-      },
-      {
-        title: "Final preparation check",
-        completed: progress >= 80,
-      },
-      {
-        title: "Procedure readiness confirmed",
-        completed: progress >= 100,
-      },
-    ]
-  }
-
-  const preparationSteps = patient
-    ? getPreparationSteps()
-    : []
-
+  const preparationSteps = preparation?.steps || []
   const completedSteps = preparationSteps.filter(
     (step) => step.completed
   ).length
+  const preparationProgress = preparation?.progress || 0
 
-  // --------------------------------------------------
-  // MARK CURRENT STEP COMPLETE
-  // --------------------------------------------------
-
-  const handleMarkComplete = () => {
-    if (!patient) return
-
-    const progressSteps = [20, 50, 80, 100]
-
-    const currentProgress = patient.progress || 0
-
-    const nextProgress =
-      progressSteps.find((value) => value > currentProgress) || 95
-
-    const updatedPatient = {
-      ...patient,
-      progress: nextProgress,
-      status:
-        nextProgress >= 100
-          ? "Ready"
-          : "In Progress",
-    }
-
-    setPatient(updatedPatient)
-
-    // Save updated patient
+  const handleTogglePreparationStep = async (step) => {
+    if (!patient || savingStepId) return
+    setSavingStepId(step.id)
+    setError("")
     try {
-      const savedPatients = getStoredPatients()
-
-      const isSavedPatient = savedPatients.some(
-        (item) => item.id === patient.id
+      const response = await api.preparations.updateStep(
+        patient.id,
+        step.id,
+        !step.completed
       )
-
-      if (isSavedPatient) {
-        const updatedPatients = savedPatients.map((item) =>
-          item.id === patient.id
-            ? {
-                ...item,
-                ...updatedPatient,
-              }
-            : item
-        )
-
-        saveStoredPatients(updatedPatients)
-      }
-    } catch (error) {
-      console.error("Error updating preparation:", error)
+      setPreparation(response.preparation)
+      setPatient({
+        ...patient,
+        preparationSteps: response.preparation.steps,
+        preparationStatus: response.preparation.status,
+        progress: response.preparation.progress,
+        status: getPatientStatus({
+          preparationSteps: response.preparation.steps,
+        }),
+      })
+      notifyPatientsChanged()
+      setMessage("Preparation checklist updated.")
+    } catch (requestError) {
+      setError(requestError.message || "Unable to update preparation status.")
+    } finally {
+      setSavingStepId("")
     }
+  }
 
-    setMessage(
-      nextProgress >= 100
-        ? "Patient preparation is now complete."
-        : "Preparation step marked as complete."
-    )
-
-    setTimeout(() => {
-      setMessage("")
-    }, 3000)
+  const handleCreateChecklist = async () => {
+    if (!patient || creatingChecklist) return
+    setCreatingChecklist(true)
+    setError("")
+    try {
+      const response = await api.preparations.createChecklist(patient.id)
+      setPreparation(response.preparation)
+      setPatient((current) => ({
+        ...current,
+        preparationSteps: response.preparation.steps,
+        preparationStatus: response.preparation.status,
+        progress: response.preparation.progress,
+        status: getPatientStatus({
+          preparationSteps: response.preparation.steps,
+        }),
+      }))
+      notifyPatientsChanged()
+      setMessage("Preparation checklist created.")
+    } catch (requestError) {
+      setError(requestError.message || "Unable to create preparation checklist.")
+    } finally {
+      setCreatingChecklist(false)
+    }
   }
 
   // --------------------------------------------------
@@ -424,8 +356,7 @@ PrepBuddy Clinic Management`
       phone: patient.phone || "",
       email: patient.email || "",
       procedure: patient.procedure || "",
-      date: patient.procedureDate || patient.date || "",
-      time: patient.procedureTime || patient.time || "",
+      ...toLocalDateTimeInput(patient.appointmentDate),
     })
 
     setShowEditModal(true)
@@ -448,93 +379,63 @@ PrepBuddy Clinic Management`
   // SAVE EDITED PATIENT
   // --------------------------------------------------
 
-  const handleSaveEdit = () => {
-    if (!patient) return
+  const handleSaveEdit = async () => {
+    if (!patient || saving) return
 
-    if (!editForm.name.trim()) {
-      setMessage("Patient name is required.")
+    if (
+      !editForm.name.trim() ||
+      !editForm.age ||
+      Number(editForm.age) < 0 ||
+      Number(editForm.age) > 120 ||
+      !editForm.phone.trim()
+    ) {
+      setMessage("Name, valid age, and phone number are required.")
       return
     }
 
-    const updatedPatient = {
-      ...patient,
-
-      name: editForm.name.trim(),
-
-      initials: editForm.name
-        .trim()
-        .split(" ")
-        .filter(Boolean)
-        .map((word) => word[0])
-        .join("")
-        .slice(0, 2)
-        .toUpperCase(),
-
-      age: Number(editForm.age) || patient.age,
-
-      phone: editForm.phone.trim(),
-
-      email: editForm.email.trim(),
-
-      procedure:
-        editForm.procedure.trim() || patient.procedure,
-
-      // Keep both field names so all PrepBuddy modules stay compatible.
-      procedureDate:
-        editForm.date.trim() ||
-        patient.procedureDate ||
-        patient.date ||
-        "",
-
-      procedureTime:
-        editForm.time.trim() ||
-        patient.procedureTime ||
-        patient.time ||
-        "",
-
-      date:
-        editForm.date.trim() ||
-        patient.procedureDate ||
-        patient.date ||
-        "",
-
-      time:
-        editForm.time.trim() ||
-        patient.procedureTime ||
-        patient.time ||
-        "",
+    if (Boolean(editForm.date) !== Boolean(editForm.time)) {
+      setMessage("Enter both procedure date and time to schedule it.")
+      return
     }
 
-    setPatient(normalizePatient(updatedPatient))
-
+    setSaving(true)
+    setError("")
     try {
-      const savedPatients = getStoredPatients()
+      const response = await api.patients.update(patient.id, {
+        name: editForm.name.trim(),
+        age: Number(editForm.age),
+        phone: editForm.phone.trim(),
+        email: editForm.email.trim(),
+        procedure: editForm.procedure.trim(),
+      })
+      let appointment = null
 
-      const existingIndex = savedPatients.findIndex(
-        (item) => item.id === patient.id
-      )
-
-      if (existingIndex !== -1) {
-        const updatedPatients = [...savedPatients]
-
-        updatedPatients[existingIndex] = updatedPatient
-
-        saveStoredPatients(updatedPatients)
-      } else {
-        // For safety, only update saved patients.
-        // Default patients remain static.
+      if (editForm.date && editForm.time) {
+        const appointmentData = {
+          patient: patient.id,
+          appointmentDate: localDateTimeToISO(editForm.date, editForm.time),
+          appointmentType: editForm.procedure.trim() || patient.procedure,
+          doctorName: patient.doctor || "",
+        }
+        const appointmentResponse = patient.appointmentId
+          ? await api.appointments.update(
+              patient.appointmentId,
+              appointmentData
+            )
+          : await api.appointments.create(appointmentData)
+        appointment = appointmentResponse.appointment
+      } else if (patient.appointmentId) {
+        await api.appointments.delete(patient.appointmentId)
       }
 
+      setPatient(normalizePatient(response.patient, appointment))
+      notifyPatientsChanged()
       setShowEditModal(false)
-
       setMessage("Patient details updated successfully.")
-
-      setTimeout(() => {
-        setMessage("")
-      }, 3000)
-    } catch (error) {
-      console.error("Error saving patient:", error)
-      setMessage("Unable to save patient details.")
+    } catch (requestError) {
+      setError(requestError.message || "Unable to save patient details.")
+    } finally {
+      setSaving(false)
     }
   }
 
@@ -547,11 +448,11 @@ PrepBuddy Clinic Management`
       <div className="flex min-h-screen items-center justify-center bg-slate-950 text-white">
         <div className="text-center">
           <h1 className="text-3xl font-bold">
-            Patient Not Found
+            {loading ? "Loading Patient..." : error ? "Unable to Load Patient" : "Patient Not Found"}
           </h1>
 
-          <p className="mt-3 text-slate-500">
-            No patient exists with ID: {id}
+          <p role={error ? "alert" : undefined} className="mt-3 text-slate-500">
+            {error || `No patient exists with ID: ${id}`}
           </p>
 
           <Link
@@ -598,16 +499,21 @@ PrepBuddy Clinic Management`
           <div className="flex items-center gap-3">
 
             <div className="flex h-9 w-9 items-center justify-center rounded-full bg-blue-600/20 text-sm font-semibold text-blue-400">
-              CS
+              {(user?.name || "Clinic Staff")
+                .trim()
+                .split(/\s+/)
+                .slice(0, 2)
+                .map((part) => part[0]?.toUpperCase())
+                .join("")}
             </div>
 
             <div className="hidden sm:block">
               <p className="text-sm font-medium">
-                Clinic Staff
+                {user?.name || "Clinic Staff"}
               </p>
 
               <p className="text-xs text-slate-500">
-                City Care Clinic
+                {user?.email || user?.role || "Clinic account"}
               </p>
             </div>
 
@@ -638,7 +544,7 @@ PrepBuddy Clinic Management`
           {reminderSent && (
             <div className="mb-5 flex items-center gap-3 rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-400">
               <CheckCircle2 size={18} />
-              Reminder sent successfully to {patient.name}.
+              Reminder scheduled for this patient. Email and notification delivery are not configured.
             </div>
           )}
 
@@ -662,6 +568,12 @@ PrepBuddy Clinic Management`
             </div>
           )}
 
+          {error && (
+            <p role="alert" className="mb-5 rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-300">
+              {error}
+            </p>
+          )}
+
           {/* =================================================
               PATIENT HEADER
           ================================================== */}
@@ -673,7 +585,12 @@ PrepBuddy Clinic Management`
               <div className="flex items-center gap-4">
 
                 <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-blue-500/10 text-xl font-bold text-blue-400">
-                  {patient.initials}
+                  {patient.name
+                    .trim()
+                    .split(/\s+/)
+                    .slice(0, 2)
+                    .map((part) => part[0]?.toUpperCase())
+                    .join("")}
                 </div>
 
                 <div>
@@ -778,7 +695,7 @@ PrepBuddy Clinic Management`
 
               <h2 className="text-lg font-bold">
                 {formatProcedureDate(
-                  patient.procedureDate || patient.date
+                  patient.date
                 )}
               </h2>
 
@@ -932,6 +849,7 @@ PrepBuddy Clinic Management`
                 <button
                   type="button"
                   onClick={handleSendReminder}
+                  disabled={saving}
                   className="flex w-full items-center gap-3 rounded-xl border border-slate-800 p-4 text-left text-sm text-slate-300 transition hover:border-blue-500 hover:text-white"
                 >
                   <Bell
@@ -999,22 +917,40 @@ PrepBuddy Clinic Management`
               </div>
 
               <span className="text-sm font-medium text-emerald-400">
-                {completedSteps} / {preparationSteps.length} completed
+                {completedSteps} / {preparationSteps.length} completed ·{" "}
+                {preparationProgress}%
               </span>
 
             </div>
 
             <div className="mt-6 space-y-4">
 
-              {preparationSteps.map((step, index) => {
-
+              {preparationLoading ? (
+                <p role="status" className="text-sm text-slate-400">
+                  Loading preparation checklist...
+                </p>
+              ) : preparationSteps.length === 0 ? (
+                <div className="rounded-xl border border-slate-800 p-4 text-sm text-slate-400">
+                  <p>This patient has no preparation checklist steps.</p>
+                  <button
+                    type="button"
+                    onClick={handleCreateChecklist}
+                    disabled={creatingChecklist}
+                    className="mt-3 rounded-lg bg-blue-600 px-4 py-2 font-semibold text-white transition hover:bg-blue-500 disabled:opacity-50"
+                  >
+                    {creatingChecklist
+                      ? "Creating..."
+                      : "Create default checklist"}
+                  </button>
+                </div>
+              ) : preparationSteps.map((step, index) => {
                 const isCurrentStep =
                   !step.completed &&
-                  index === completedSteps
+                  index === preparationSteps.findIndex((item) => !item.completed)
 
                 return (
                   <div
-                    key={step.title}
+                    key={step.id}
                     className="flex items-center gap-4"
                   >
 
@@ -1056,15 +992,23 @@ PrepBuddy Clinic Management`
 
                     {/* MARK COMPLETE */}
 
-                    {isCurrentStep && (
-                      <button
-                        type="button"
-                        onClick={handleMarkComplete}
-                        className="rounded-xl bg-blue-600 px-5 py-3 text-sm font-semibold text-white transition hover:bg-blue-500"
-                      >
-                        Mark Complete
-                      </button>
-                    )}
+                    <button
+                      type="button"
+                      onClick={() => handleTogglePreparationStep(step)}
+                      disabled={Boolean(savingStepId)}
+                      aria-pressed={step.completed}
+                      className={`rounded-xl border px-4 py-2 text-sm font-semibold transition disabled:opacity-50 ${
+                        step.completed
+                          ? "border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/10"
+                          : "border-blue-500/30 text-blue-300 hover:bg-blue-500/10"
+                      }`}
+                    >
+                      {savingStepId === step.id
+                        ? "Saving..."
+                        : step.completed
+                          ? "Mark incomplete"
+                          : "Mark complete"}
+                    </button>
 
                   </div>
                 )
@@ -1232,7 +1176,7 @@ PrepBuddy Clinic Management`
                 </p>
 
                 <p className="mt-1 text-sm text-slate-500">
-                  {formatProcedureDate(patient.procedureDate || patient.date)} at{" "}
+                  {formatProcedureDate(patient.date)} at{" "}
                   {patient.procedureTime || patient.time || "Not scheduled"}
                 </p>
 
@@ -1338,6 +1282,8 @@ PrepBuddy Clinic Management`
                   name="age"
                   value={editForm.age}
                   onChange={handleEditChange}
+                  min="0"
+                  max="120"
                   className="w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-white outline-none transition focus:border-blue-500"
                 />
 
@@ -1356,6 +1302,7 @@ PrepBuddy Clinic Management`
                   name="phone"
                   value={editForm.phone}
                   onChange={handleEditChange}
+                  required
                   className="w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-white outline-none transition focus:border-blue-500"
                 />
 
@@ -1406,11 +1353,10 @@ PrepBuddy Clinic Management`
                 </label>
 
                 <input
-                  type="text"
+                  type="date"
                   name="date"
                   value={editForm.date}
                   onChange={handleEditChange}
-                  placeholder="e.g. Aug 28, 2026"
                   className="w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-white outline-none transition focus:border-blue-500"
                 />
 
@@ -1425,11 +1371,10 @@ PrepBuddy Clinic Management`
                 </label>
 
                 <input
-                  type="text"
+                  type="time"
                   name="time"
                   value={editForm.time}
                   onChange={handleEditChange}
-                  placeholder="e.g. 10:30 AM"
                   className="w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-white outline-none transition focus:border-blue-500"
                 />
 
@@ -1452,10 +1397,11 @@ PrepBuddy Clinic Management`
               <button
                 type="button"
                 onClick={handleSaveEdit}
+                disabled={saving}
                 className="inline-flex items-center gap-2 rounded-xl bg-blue-600 px-5 py-3 text-sm font-semibold text-white transition hover:bg-blue-500"
               >
                 <Save size={17} />
-                Save Changes
+                {saving ? "Saving..." : "Save Changes"}
               </button>
 
             </div>
